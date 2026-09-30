@@ -35,10 +35,10 @@ export function HeaderIconButton({
         event.stopPropagation();
         onClick?.();
       }}
-      className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border text-slate-400 transition-colors hover:text-white sm:h-10 sm:w-10 ${
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border text-app-muted-foreground transition-colors hover:text-app-foreground sm:h-10 sm:w-10 ${
         active
-          ? "border-blue-500/40 bg-blue-600/20 text-blue-300"
-          : "border-transparent hover:border-slate-700 hover:bg-slate-800/70"
+          ? "border-app-primary/40 bg-app-primary/15 text-app-primary"
+          : "border-transparent hover:border-app-border hover:bg-app-surface-elevated"
       } ${className}`}
       aria-label={label}
       title={label}
@@ -82,7 +82,7 @@ export function HeaderDropdown({ open, onClose, children, className = "", align 
 
   return (
     <div ref={ref} className={`absolute top-full z-[60] mt-2 ${alignmentClass} ${className}`}>
-      <div className="max-h-[70dvh] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto overflow-x-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-2xl">
+      <div className="max-h-[70dvh] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto overflow-x-hidden rounded-xl border border-app-border bg-app-surface shadow-2xl">
         {children}
       </div>
     </div>

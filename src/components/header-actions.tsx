@@ -47,7 +47,7 @@ function HeaderUserAvatar() {
   const fallback = auth.user?.nome?.trim().charAt(0).toUpperCase() || "U";
 
   return (
-    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-700 bg-slate-800 text-sm font-semibold text-slate-300">
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-app-border bg-app-surface-elevated text-sm font-semibold text-app-foreground">
       {auth.loading ? (
         <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-label="Carregando dados do usuario" />
       ) : showImage ? (
@@ -65,7 +65,7 @@ function ApplicationLogo({ application }: { application: HeaderApplication }) {
   const showImage = application.logo_url && !failed;
 
   return (
-    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-800 bg-slate-950/50 text-xs font-semibold text-slate-300">
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-app-border bg-app-surface-elevated text-xs font-semibold text-app-foreground">
       {showImage ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -153,18 +153,18 @@ export function HeaderActions() {
         </HeaderIconButton>
 
         <HeaderDropdown open={openMenu === "applications"} onClose={closeMenu}>
-          <div className="border-b border-slate-800 px-4 py-3">
-            <h3 className="font-semibold text-white">Aplicativos</h3>
-            <p className="text-xs text-slate-500">Sistemas disponíveis para sua conta</p>
+          <div className="border-b border-app-border px-4 py-3">
+            <h3 className="font-semibold text-app-foreground">Aplicativos</h3>
+            <p className="text-xs text-app-muted-foreground">Sistemas disponíveis para sua conta</p>
           </div>
           <div className="max-h-80 overflow-y-auto p-2">
             {appsLoading ? (
-              <p className="px-3 py-4 text-sm text-slate-400">Carregando aplicativos...</p>
+              <p className="px-3 py-4 text-sm text-app-muted-foreground">Carregando aplicativos...</p>
             ) : appsError ? (
               <div className="space-y-3 px-3 py-4">
-                <p className="text-sm text-rose-300">{appsError}</p>
+                <p className="text-sm text-app-danger">{appsError}</p>
                 <button
-                  className="inline-flex min-h-9 items-center rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:bg-slate-800/70 hover:text-white"
+                  className="inline-flex min-h-9 items-center rounded-lg border border-app-border px-3 py-1.5 text-xs font-semibold text-app-muted-foreground transition-colors hover:bg-app-surface-elevated hover:text-app-foreground"
                   type="button"
                   onClick={() => void loadApplications()}
                 >
@@ -172,7 +172,7 @@ export function HeaderActions() {
                 </button>
               </div>
             ) : applications.length === 0 ? (
-              <p className="px-3 py-4 text-sm text-slate-400">Nenhum outro aplicativo disponível.</p>
+              <p className="px-3 py-4 text-sm text-app-muted-foreground">Nenhum outro aplicativo disponível.</p>
             ) : (
               applications.map((application) => (
                 <a
@@ -180,13 +180,13 @@ export function HeaderActions() {
                   href={application.homepage_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-slate-800/50"
+                  className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-app-surface-elevated"
                 >
                   <ApplicationLogo application={application} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-white">{application.nome}</span>
+                    <span className="block truncate text-sm font-medium text-app-foreground">{application.nome}</span>
                   </span>
-                  <ExternalLink className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
+                  <ExternalLink className="h-4 w-4 shrink-0 text-app-muted-foreground" aria-hidden="true" />
                 </a>
               ))
             )}
@@ -209,31 +209,31 @@ export function HeaderActions() {
         </button>
 
         <HeaderDropdown open={openMenu === "account"} onClose={closeMenu}>
-          <div className="border-b border-slate-800 px-4 py-4">
+          <div className="border-b border-app-border px-4 py-4">
             <div className="flex items-center gap-3">
               <HeaderUserAvatar />
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-white">{displayName}</p>
-                <p className="truncate text-xs text-slate-500">{auth.loading ? "Carregando dados..." : auth.user?.email}</p>
+                <p className="truncate text-sm font-semibold text-app-foreground">{displayName}</p>
+                <p className="truncate text-xs text-app-muted-foreground">{auth.loading ? "Carregando dados..." : auth.user?.email}</p>
               </div>
             </div>
-            <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wider text-slate-600">Perfil no Raroclients</p>
-              <p className="text-sm font-medium text-slate-200">{auth.loading ? "Carregando..." : auth.label}</p>
+            <div className="mt-3 rounded-lg border border-app-border bg-app-surface-elevated/60 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-app-muted-foreground">Perfil no Raroclients</p>
+              <p className="text-sm font-medium text-app-foreground">{auth.loading ? "Carregando..." : auth.label}</p>
             </div>
           </div>
           <div className="space-y-2 p-2">
             {nexusProfileUrl ? (
               <a
                 href={nexusProfileUrl}
-                className="flex items-center justify-between rounded-lg px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-800/50 hover:text-white"
+                className="flex items-center justify-between rounded-lg px-3 py-2 text-sm text-app-muted-foreground transition-colors hover:bg-app-surface-elevated hover:text-app-foreground"
               >
                 Editar perfil
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </a>
             ) : (
               <button
-                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-slate-400 transition-colors hover:bg-slate-800/50 hover:text-white"
+                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-app-muted-foreground transition-colors hover:bg-app-surface-elevated hover:text-app-foreground"
                 type="button"
                 onClick={() => void loadApplications()}
               >
@@ -241,7 +241,7 @@ export function HeaderActions() {
               </button>
             )}
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-rose-300 transition-colors hover:bg-rose-500/10 hover:text-rose-200"
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-app-danger transition-colors hover:bg-app-danger/10"
               type="button"
               onClick={() => void auth.logout()}
             >

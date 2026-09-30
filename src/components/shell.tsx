@@ -54,8 +54,8 @@ export function Shell({ children }: { children: ReactNode }) {
             <img src="/raroclients-logo.jpeg" alt="Raroclients" className="h-full w-full object-contain" />
           </span>
           <div className="leading-tight">
-            <span className="block text-xl font-bold tracking-tight text-white">
-                  Raro<span className="text-blue-400">Clients</span>
+            <span className="block text-xl font-bold tracking-tight text-app-foreground">
+                  Raro<span className="text-app-primary">Clients</span>
             </span>
             <p className="text-[11px] text-app-muted-foreground">Gestão de clientes</p>
           </div>
@@ -90,7 +90,7 @@ export function Shell({ children }: { children: ReactNode }) {
       </aside>
 
       {/* Header sticky (4rem, h-16) */}
-      <header className="sticky top-0 z-[45] flex h-16 items-center justify-between gap-3 border-b border-slate-800 bg-slate-900/95 px-4 backdrop-blur sm:px-6 lg:ml-64 lg:pl-6 lg:pr-8">
+      <header className="sticky top-0 z-[45] flex h-16 items-center justify-between gap-3 border-b border-app-border bg-app-surface/95 px-4 backdrop-blur sm:px-6 lg:ml-64 lg:pl-6 lg:pr-8">
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard"
@@ -102,7 +102,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </Link>
           <div className="leading-tight">
             <p className="text-[11px] font-semibold text-app-muted-foreground lg:hidden">{APP.name}</p>
-            <h1 className="text-base font-bold text-white lg:text-lg">{current?.label ?? APP.name}</h1>
+            <h1 className="text-base font-bold text-app-foreground lg:text-lg">{current?.label ?? APP.name}</h1>
           </div>
         </div>
         <HeaderActions />
