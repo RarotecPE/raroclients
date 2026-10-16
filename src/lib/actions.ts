@@ -348,9 +348,11 @@ export async function createBase(fd: FormData) {
   const existingChildIds = fd.getAll("inferioresExistentesIds").filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
   let createdRowId = "";
+  let existingChildrenSnapshot: Array<{ id: string; nome: string; tipo: string }> = [];
   await db.transaction(async (tx) => {
     const allBases = await tx.select().from(bases).where(eq(bases.municipioId, municipioId)).orderBy(bases.id).for("update");
     validateChildBaseLinks(null, municipioId, existingChildIds, newChildren, allBases);
+    existingChildrenSnapshot = allBases.filter((item) => existingChildIds.includes(item.id)).map((item) => ({ id: item.id, nome: item.nome, tipo: item.tipo }));
     const [row] = await tx.insert(bases).values({
       municipioId,
       nome,
@@ -388,6 +390,8 @@ export async function createBase(fd: FormData) {
       cnpj,
       new_children_count: newChildren.length,
       existing_children_linked: existingChildIds.length,
+      new_children: newChildren.map((c) => ({ nome: c.nome, tipo: c.tipo })),
+      existing_children: existingChildrenSnapshot,
     },
   });
 
@@ -404,6 +408,7 @@ export async function createBase(fd: FormData) {
         superior_base_nome: nome,
         linked_children_count: existingChildIds.length,
         child_base_ids: existingChildIds,
+        linked_children: existingChildrenSnapshot,
       },
     });
   }
@@ -427,11 +432,13 @@ export async function updateBase(fd: FormData) {
   const newChildren = parseNewChildBases(str(fd, "inferioresNovas"));
   const existingChildIds = fd.getAll("inferioresExistentesIds").filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+  let existingChildrenSnapshot: Array<{ id: string; nome: string; tipo: string }> = [];
   await db.transaction(async (tx) => {
     const allBases = await tx.select().from(bases).where(eq(bases.municipioId, municipioId)).orderBy(bases.id).for("update");
     const current = allBases.find((item) => item.id === id);
     if (!current) throw new Error("Base não encontrada.");
     validateChildBaseLinks(current, municipioId, existingChildIds, newChildren, allBases);
+    existingChildrenSnapshot = allBases.filter((item) => existingChildIds.includes(item.id)).map((item) => ({ id: item.id, nome: item.nome, tipo: item.tipo }));
     await tx.update(bases).set({
       nome,
       tipo,
@@ -493,6 +500,7 @@ export async function updateBase(fd: FormData) {
         superior_base_nome: nome,
         linked_children_count: existingChildIds.length,
         child_base_ids: existingChildIds,
+        linked_children: existingChildrenSnapshot,
       },
     });
   }
@@ -559,6 +567,8 @@ export async function desabilitarBase(fd: FormData) {
   let disabledModulesCount = 0;
   let disabledBaseIds: string[] = [];
   let disabledModuleIds: string[] = [];
+  let disabledBasesSnapshot: Array<{ id: string; nome: string }> = [];
+  let disabledModulesSnapshot: Array<{ id: string; nome: string }> = [];
 
   await db.transaction(async (tx) => {
     const [requestedBase] = await tx.select().from(bases).where(eq(bases.id, id));
@@ -589,6 +599,14 @@ export async function desabilitarBase(fd: FormData) {
     disabledModulesCount = plan.moduleIdsToDisable.length;
     disabledBaseIds = plan.baseIdsToDisable;
     disabledModuleIds = plan.moduleIdsToDisable;
+    disabledBasesSnapshot = plan.baseIdsToDisable.map((bId) => ({
+      id: bId,
+      nome: allBases.find((b) => b.id === bId)?.nome ?? bId,
+    }));
+    disabledModulesSnapshot = plan.moduleIdsToDisable.map((mId) => ({
+      id: mId,
+      nome: allModules.find((m) => m.id === mId)?.nome ?? mId,
+    }));
 
     if (plan.baseIdsToDisable.length > 0) {
       await tx
@@ -646,6 +664,8 @@ export async function desabilitarBase(fd: FormData) {
       disabled_modules_count: disabledModulesCount,
       disabled_base_ids: disabledBaseIds,
       disabled_module_ids: disabledModuleIds,
+      disabled_bases: disabledBasesSnapshot,
+      disabled_modules: disabledModulesSnapshot,
     },
   });
 
@@ -668,6 +688,8 @@ export async function reabilitarBase(fd: FormData) {
   let reactivatedModulesCount = 0;
   let reactivatedBaseIds: string[] = [];
   let reactivatedModuleIds: string[] = [];
+  let reactivatedBasesSnapshot: Array<{ id: string; nome: string }> = [];
+  let reactivatedModulesSnapshot: Array<{ id: string; nome: string }> = [];
 
   await db.transaction(async (tx) => {
     const [requestedBase] = await tx.select().from(bases).where(eq(bases.id, id));
@@ -697,6 +719,14 @@ export async function reabilitarBase(fd: FormData) {
     reactivatedModulesCount = plan.moduleIdsToReactivate.length;
     reactivatedBaseIds = plan.baseIdsToReactivate;
     reactivatedModuleIds = plan.moduleIdsToReactivate;
+    reactivatedBasesSnapshot = plan.baseIdsToReactivate.map((bId) => ({
+      id: bId,
+      nome: allBases.find((b) => b.id === bId)?.nome ?? bId,
+    }));
+    reactivatedModulesSnapshot = plan.moduleIdsToReactivate.map((mId) => ({
+      id: mId,
+      nome: allModules.find((m) => m.id === mId)?.nome ?? mId,
+    }));
 
     if (plan.baseIdsToReactivate.length > 0) {
       await tx
@@ -753,6 +783,8 @@ export async function reabilitarBase(fd: FormData) {
       reactivated_modules_count: reactivatedModulesCount,
       reactivated_base_ids: reactivatedBaseIds,
       reactivated_module_ids: reactivatedModuleIds,
+      reactivated_bases: reactivatedBasesSnapshot,
+      reactivated_modules: reactivatedModulesSnapshot,
     },
   });
 
@@ -927,6 +959,7 @@ export async function createModulosEmGrupo(fd: FormData) {
       module_name: nome,
       created_count: rows.length,
       base_ids: rows.map((r) => r.baseId),
+      bases: basesParaCriar.map((b) => ({ id: b.id, nome: b.nome })),
       cliente_nome: cliente?.clienteNome,
     },
   });
@@ -990,6 +1023,10 @@ export async function updateResponsavelModulo(fd: FormData) {
   const email = str(fd, "email");
   const celular = phoneDigits(fd, "celular");
 
+  const modulo = await assertModuloOperacional(baseModuleId);
+  const base = await assertBaseOperacional(modulo.baseId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
+
   await db
     .update(moduloResponsaveis)
     .set({
@@ -1006,7 +1043,7 @@ export async function updateResponsavelModulo(fd: FormData) {
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "responsible", id, label: nome }],
+    targets: [{ type: "responsible", id, label: `${nome} (${modulo.nome} - ${base.nome})` }],
     diff: {
       before: {
         nome: responsavel.nome,
@@ -1021,7 +1058,11 @@ export async function updateResponsavelModulo(fd: FormData) {
     },
     details: {
       base_module_id: baseModuleId,
+      module_name: modulo.nome,
+      base_id: base.id,
+      base_nome: base.nome,
       municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
     },
   });
 
@@ -1037,6 +1078,9 @@ export async function deleteResponsavelModulo(fd: FormData) {
   const municipioId = responsavel.municipioId;
   const baseModuleId = responsavel.baseModuleId;
   const nome = str(fd, "nome") ?? responsavel.nome;
+  const modulo = await assertModuloOperacional(baseModuleId);
+  const base = await assertBaseOperacional(modulo.baseId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
 
   await db.delete(moduloResponsaveis).where(eq(moduloResponsaveis.id, id));
   await logEvent({ tipo: "responsavel_removido", descricao: `${nome} removido e desvinculado do modulo.`, municipioId, baseModuleId });
@@ -1047,10 +1091,14 @@ export async function deleteResponsavelModulo(fd: FormData) {
     severity: "WARNING",
     actor,
     context,
-    targets: [{ type: "responsible", id, label: nome }],
+    targets: [{ type: "responsible", id, label: `${nome} (${modulo.nome} - ${base.nome})` }],
     details: {
       base_module_id: baseModuleId,
+      module_name: modulo.nome,
+      base_id: base.id,
+      base_nome: base.nome,
       municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       nome,
       email: responsavel.email,
     },
@@ -1201,21 +1249,25 @@ export async function updateModuloObservacoes(fd: FormData) {
     baseModuleId: id,
   });
 
+  const [cliente] = base.municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, base.municipioId)) : [];
+
   auditClient.log({
     category: "client",
     action: "module.updated",
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome}` }],
+    targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome} (${cliente?.clienteNome ?? base.municipioId})` }],
     diff: {
       before: { observacoes: modulo.observacoes },
       after: { observacoes },
     },
     details: {
+      modulo_nome: modulo.nome,
       base_id: base.id,
       base_nome: base.nome,
       municipio_id: base.municipioId,
+      cliente_nome: cliente?.clienteNome,
     },
   });
 
@@ -1297,6 +1349,7 @@ export async function migracaoModulo(fd: FormData) {
   const moduloBefore = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
   const municipioId = str(fd, "municipioId") ?? base?.municipioId;
+  const [cliente] = municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId)) : [];
   const inicio = str(fd, "migracaoInicio");
   const fim = str(fd, "migracaoFim");
   await db.update(baseModules).set({ migracaoInicio: inicio, migracaoFim: fim }).where(eq(baseModules.id, id));
@@ -1314,7 +1367,7 @@ export async function migracaoModulo(fd: FormData) {
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""} (${cliente?.clienteNome ?? municipioId})` }],
     diff: {
       before: {
         migracaoInicio: moduloBefore.migracaoInicio,
@@ -1326,10 +1379,14 @@ export async function migracaoModulo(fd: FormData) {
       },
     },
     details: {
+      modulo_nome: moduloBefore.nome,
+      base_id: moduloBefore.baseId,
+      base_nome: base?.nome ?? null,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       inicio,
       fim,
       concluida: !!fim,
-      municipio_id: municipioId,
     },
   });
 
@@ -1345,6 +1402,7 @@ export async function implantacaoModulo(fd: FormData) {
   const moduloBefore = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
   const municipioId = str(fd, "municipioId") ?? base?.municipioId;
+  const [cliente] = municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId)) : [];
   const status = req(fd, "implantacaoStatus");
   await db.update(baseModules).set({ implantacaoStatus: status }).where(eq(baseModules.id, id));
   await logEvent({ tipo: "implantacao", descricao: `Implantação: ${status}.`, municipioId, baseModuleId: id });
@@ -1355,15 +1413,19 @@ export async function implantacaoModulo(fd: FormData) {
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""} (${cliente?.clienteNome ?? municipioId})` }],
     diff: {
       before: { implantacaoStatus: moduloBefore.implantacaoStatus },
       after: { implantacaoStatus: status },
     },
     details: {
+      modulo_nome: moduloBefore.nome,
+      base_id: moduloBefore.baseId,
+      base_nome: base?.nome ?? null,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       previous_status: moduloBefore.implantacaoStatus,
       new_status: status,
-      municipio_id: municipioId,
     },
   });
 
@@ -1379,6 +1441,7 @@ export async function execucaoModulo(fd: FormData) {
   const moduloBefore = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
   const municipioId = str(fd, "municipioId") ?? base?.municipioId;
+  const [cliente] = municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId)) : [];
   const data = str(fd, "execucaoInicio") ?? today();
   await db.update(baseModules).set({ execucaoInicio: data }).where(eq(baseModules.id, id));
   await logEvent({ tipo: "execucao_iniciada", descricao: "Cliente iniciou a utilização do módulo.", municipioId, baseModuleId: id, data });
@@ -1389,11 +1452,15 @@ export async function execucaoModulo(fd: FormData) {
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""} (${cliente?.clienteNome ?? municipioId})` }],
     details: {
+      modulo_nome: moduloBefore.nome,
+      base_id: moduloBefore.baseId,
+      base_nome: base?.nome ?? null,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       execucao_inicio: data,
       previous_inicio: moduloBefore.execucaoInicio,
-      municipio_id: municipioId,
     },
   });
 
@@ -1409,6 +1476,7 @@ export async function desabilitarModulo(fd: FormData) {
   const moduloBefore = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
   const municipioId = str(fd, "municipioId") ?? base?.municipioId;
+  const [cliente] = municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId)) : [];
   const data = str(fd, "data") ?? today();
   const motivo = req(fd, "motivo");
   const justificativa = req(fd, "justificativa");
@@ -1430,12 +1498,16 @@ export async function desabilitarModulo(fd: FormData) {
     severity: "WARNING",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""} (${cliente?.clienteNome ?? municipioId})` }],
     details: {
+      modulo_nome: moduloBefore.nome,
+      base_id: moduloBefore.baseId,
+      base_nome: base?.nome ?? null,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       motivo,
       justificativa,
       desabilitado_at: data,
-      municipio_id: municipioId,
     },
   });
 
@@ -1451,6 +1523,7 @@ export async function reabilitarModulo(fd: FormData) {
   const moduloBefore = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
   const municipioId = str(fd, "municipioId") ?? base?.municipioId;
+  const [cliente] = municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId)) : [];
   await db
     .update(baseModules)
     .set({ desabilitadoAt: null, desabilitadoMotivo: null, desabilitadoJustificativa: null })
@@ -1463,9 +1536,13 @@ export async function reabilitarModulo(fd: FormData) {
     severity: "INFO",
     actor,
     context,
-    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""} (${cliente?.clienteNome ?? municipioId})` }],
     details: {
+      modulo_nome: moduloBefore.nome,
+      base_id: moduloBefore.baseId,
+      base_nome: base?.nome ?? null,
       municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
       previous_desabilitado_at: moduloBefore.desabilitadoAt,
       previous_motivo: moduloBefore.desabilitadoMotivo,
     },
@@ -1503,7 +1580,7 @@ export async function createContrato(fd: FormData) {
   ];
   if (baseModuleIds.length === 0) validateContractModuleSelection(baseModuleIds, [], []);
   const modulosSelecionados = await db
-    .select({ id: baseModules.id, baseId: baseModules.baseId })
+    .select({ id: baseModules.id, baseId: baseModules.baseId, nome: baseModules.nome })
     .from(baseModules)
     .where(inArray(baseModules.id, baseModuleIds));
   validateContractModuleSelection(baseModuleIds, modulosSelecionados, basesDoCliente.map((base) => base.id));
@@ -1575,6 +1652,15 @@ export async function createContrato(fd: FormData) {
       municipio_id: municipioId,
       cliente_nome: cliente?.clienteNome,
       linked_modules_count: baseModuleIds.length,
+      linked_modules: modulosSelecionados.map((m) => {
+        const base = basesDoCliente.find((b) => b.id === m.baseId);
+        return {
+          id: m.id,
+          nome: m.nome,
+          base_id: m.baseId,
+          base_nome: base?.nome ?? null,
+        };
+      }),
       document_name: arquivo?.name ?? null,
     },
   });
@@ -1647,15 +1733,17 @@ export async function desvincularBaseContrato(fd: FormData) {
   const base = await assertBaseOperacional(baseId);
   if (base.municipioId !== c.municipioId) throw new Error("A base deve pertencer ao cliente deste contrato.");
   let linkedCount = 0;
+  let releasedModules: { id: string; nome: string }[] = [];
   await db.transaction(async (tx) => {
     await tx.select({ id: bases.id }).from(bases).where(eq(bases.id, baseId)).for("update");
     const linked = await tx
-      .select({ baseModuleId: contratoModulos.baseModuleId })
+      .select({ baseModuleId: contratoModulos.baseModuleId, nome: baseModules.nome })
       .from(contratoModulos)
       .innerJoin(baseModules, eq(baseModules.id, contratoModulos.baseModuleId))
       .where(and(eq(contratoModulos.contratoId, contratoId), eq(baseModules.baseId, baseId)));
     if (linked.length === 0) throw new Error("Esta base não está vinculada ao contrato.");
     linkedCount = linked.length;
+    releasedModules = linked.map((item) => ({ id: item.baseModuleId, nome: item.nome }));
     await tx.delete(contratoModulos).where(and(
       eq(contratoModulos.contratoId, contratoId),
       inArray(contratoModulos.baseModuleId, linked.map((item) => item.baseModuleId)),
@@ -1685,6 +1773,7 @@ export async function desvincularBaseContrato(fd: FormData) {
       motivo,
       observacoes,
       released_modules_count: linkedCount,
+      released_modules: releasedModules,
       municipio_id: c.municipioId,
       cliente_nome: cliente?.clienteNome,
     },
@@ -1743,22 +1832,46 @@ export async function createDocumento(fd: FormData) {
     inserted = true;
     await logEvent({ tipo: "documento_anexado", descricao: `Documento anexado: ${row.nome} (${row.tipo}).`, municipioId: row.municipioId, baseId: row.baseId, baseModuleId: row.baseModuleId, contratoId: row.contratoId });
 
+    const [cliente] = row.municipioId ? await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, row.municipioId)) : [];
+    let baseNome: string | null = null;
+    let moduloNome: string | null = null;
+    let contratoNumero: string | null = null;
+    if (row.baseId) {
+      const [b] = await db.select({ nome: bases.nome }).from(bases).where(eq(bases.id, row.baseId));
+      baseNome = b?.nome ?? null;
+    }
+    if (row.baseModuleId) {
+      const [m] = await db.select({ nome: baseModules.nome }).from(baseModules).where(eq(baseModules.id, row.baseModuleId));
+      moduloNome = m?.nome ?? null;
+    }
+    if (row.contratoId) {
+      const [c] = await db.select({ numero: contratos.numero }).from(contratos).where(eq(contratos.id, row.contratoId));
+      contratoNumero = c?.numero ?? null;
+    }
+
     auditClient.log({
       category: "document",
       action: "document.created",
       severity: "INFO",
       actor,
       context,
-      targets: [{ type: "document", id: row.id, label: row.nome }],
+      targets: [
+        { type: "document", id: row.id, label: row.nome },
+        ...(row.municipioId ? [{ type: "municipality", id: row.municipioId, label: cliente?.clienteNome ?? row.municipioId }] : []),
+      ],
       details: {
         tipo: row.tipo,
         tamanho_bytes: row.tamanhoBytes,
         mime_type: row.mimeType,
         arquivo_nome_original: row.arquivoNomeOriginal,
         municipio_id: row.municipioId,
+        cliente_nome: cliente?.clienteNome,
         contrato_id: row.contratoId,
+        contrato_numero: contratoNumero,
         base_id: row.baseId,
+        base_nome: baseNome,
         base_module_id: row.baseModuleId,
+        modulo_nome: moduloNome,
         proposta_id: row.propostaId,
       },
     });

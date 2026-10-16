@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { EnvironmentBanner } from "@/components/layout/EnvironmentBanner";
 import { Shell } from "@/components/shell";
 import { APP } from "@/lib/constants";
 import "./globals.css";
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="pt-BR" className="h-full antialiased" suppressHydrationWarning>
       <body className="min-h-screen bg-app-background font-sans text-app-foreground antialiased">
+        <EnvironmentBanner />
         <Shell>{children}</Shell>
       </body>
     </html>

@@ -263,6 +263,12 @@ export async function createProposta(fd: FormData) {
     });
   });
 
+  const basesStructured = input.items.map((item) => ({
+    nome: item.nome,
+    tipo: item.tipo,
+    modulos: item.modulos.map((m) => m.nome),
+  }));
+
   auditClient.log({
     category: "proposal",
     action: "proposal.created",
@@ -283,6 +289,7 @@ export async function createProposta(fd: FormData) {
       modulos_count: input.items.reduce((acc, i) => acc + i.modulos.length, 0),
       atividade_conjunta: input.atividadeConjunta,
       especificidades: input.especificidades,
+      bases: basesStructured,
     },
   });
 
@@ -299,6 +306,10 @@ export async function atualizarProposta(fd: FormData) {
   if (original.situacao !== "solicitada" && original.situacao !== "em_retificacao") throw new Error("A proposta não pode ser editada no status atual.");
   const input = await validateProposalForm(fd, original);
   const beforeBases = await db.select().from(propostaBases).where(eq(propostaBases.propostaId, id));
+  const beforeBaseIds = beforeBases.map((b) => b.id);
+  const beforeModulos = beforeBaseIds.length
+    ? await db.select().from(propostaModulos).where(inArray(propostaModulos.propostaBaseId, beforeBaseIds))
+    : [];
   const beforeEspecificidades = await db.select().from(propostaEspecificidades).where(eq(propostaEspecificidades.propostaId, id));
 
   await db.transaction(async (tx) => {
@@ -323,6 +334,20 @@ export async function atualizarProposta(fd: FormData) {
     });
   });
 
+  const beforeBasesStructured = beforeBases.map((base) => ({
+    nome: base.nome,
+    tipo: base.tipo,
+    modulos: beforeModulos
+      .filter((m) => m.propostaBaseId === base.id)
+      .map((m) => m.nome),
+  }));
+
+  const afterBasesStructured = input.items.map((item) => ({
+    nome: item.nome,
+    tipo: item.tipo,
+    modulos: item.modulos.map((m) => m.nome),
+  }));
+
   auditClient.log({
     category: "proposal",
     action: "proposal.updated",
@@ -338,19 +363,20 @@ export async function atualizarProposta(fd: FormData) {
       cliente_nome: original.clienteNomeSnapshot,
       bases_count: input.items.length,
       modulos_count: input.items.reduce((acc, i) => acc + i.modulos.length, 0),
+      bases: afterBasesStructured,
     },
     diff: {
       before: {
         atividadeConjunta: original.atividadeConjunta,
         observacoes: original.observacoes,
         especificidades: beforeEspecificidades.map((e) => e.especificidade),
-        basesCount: beforeBases.length,
+        bases: beforeBasesStructured,
       },
       after: {
         atividadeConjunta: input.atividadeConjunta,
         observacoes: input.observacoes,
         especificidades: input.especificidades,
-        basesCount: input.items.length,
+        bases: afterBasesStructured,
       },
     },
   });
@@ -398,6 +424,16 @@ export async function cancelarProposta(fd: FormData) {
 
   if (proposalData) {
     const p = proposalData as typeof propostas.$inferSelect;
+    const pBases = await db.select().from(propostaBases).where(eq(propostaBases.propostaId, id));
+    const pModulos = pBases.length
+      ? await db.select().from(propostaModulos).where(inArray(propostaModulos.propostaBaseId, pBases.map((b) => b.id)))
+      : [];
+    const basesStructured = pBases.map((base) => ({
+      nome: base.nome,
+      tipo: base.tipo,
+      modulos: pModulos.filter((m) => m.propostaBaseId === base.id).map((m) => m.nome),
+    }));
+
     auditClient.log({
       category: "proposal",
       action: "proposal.cancelled",
@@ -405,14 +441,18 @@ export async function cancelarProposta(fd: FormData) {
       actor,
       context,
       targets: [
-        { type: "proposal", id, label: `Proposta - ${p.clienteNomeSnapshot}` },
+        { type: "proposal", id, label: `Proposta ${p.tipo} - ${p.clienteNomeSnapshot}` },
         ...(p.municipioId ? [{ type: "municipality", id: p.municipioId, label: p.clienteNomeSnapshot }] : []),
       ],
       details: {
+        tipo: p.tipo,
         motivo,
         situacao_anterior: "solicitada",
         situacao_nova: "cancelada",
         cliente_nome: p.clienteNomeSnapshot,
+        bases_count: pBases.length,
+        modulos_count: pModulos.length,
+        bases: basesStructured,
       },
     });
   }
@@ -726,6 +766,14 @@ async function materializeAcceptedProposal(
     let reusedBases = 0;
     let reusedModules = 0;
 
+    const materializedBases: Array<{
+      base_id: string;
+      nome: string;
+      tipo: string;
+      criada: boolean;
+      modulos: Array<{ modulo_id: string; nome: string; criado: boolean }>;
+    }> = [];
+
     for (const proposalBase of proposalBaseRows) {
       let targetBase = proposalBase.baseId ? clientBases.find((base) => base.id === proposalBase.baseId) : undefined;
       if (proposalBase.baseId && !targetBase) throw new Error(`A base vinculada a ${proposalBase.nome} não pertence mais ao cliente.`);
@@ -733,6 +781,7 @@ async function materializeAcceptedProposal(
         targetBase = clientBases.find((base) => norm(base.tipo.trim()) === norm((proposalBase.tipo ?? "Outros").trim()));
         if (targetBase) reusedBases += 1;
       }
+      let baseCreated = false;
       if (!targetBase) {
         [targetBase] = await tx.insert(bases).values({
           municipioId,
@@ -742,6 +791,7 @@ async function materializeAcceptedProposal(
         }).returning();
         clientBases.push(targetBase);
         createdBases += 1;
+        baseCreated = true;
         await tx.insert(eventos).values({
           tipo: "base_criada_via_proposta",
           descricao: `Base ${targetBase.nome} criada a partir da proposta aceita.${proposalBase.forcarCriacaoDuplicada ? " Criação duplicada confirmada na proposta." : ""}`,
@@ -753,6 +803,8 @@ async function materializeAcceptedProposal(
       }
       if (proposalBase.baseId !== targetBase.id) await tx.update(propostaBases).set({ baseId: targetBase.id }).where(eq(propostaBases.id, proposalBase.id));
 
+      const baseModulesList: Array<{ modulo_id: string; nome: string; criado: boolean }> = [];
+
       for (const proposalModule of proposalModuleRows.filter((module) => module.propostaBaseId === proposalBase.id)) {
         let targetModule = proposalModule.baseModuleId ? clientModules.find((module) => module.id === proposalModule.baseModuleId) : undefined;
         if (targetModule && targetModule.baseId !== targetBase.id) targetModule = undefined;
@@ -760,10 +812,12 @@ async function materializeAcceptedProposal(
           targetModule = clientModules.find((module) => module.baseId === targetBase.id && norm(module.nome.trim()) === norm(proposalModule.nome.trim()));
           if (targetModule) reusedModules += 1;
         }
+        let moduleCreated = false;
         if (!targetModule) {
           [targetModule] = await tx.insert(baseModules).values({ baseId: targetBase.id, nome: proposalModule.nome }).returning();
           clientModules.push(targetModule);
           createdModules += 1;
+          moduleCreated = true;
           await tx.insert(eventos).values({
             tipo: "modulo_criado_via_proposta",
             descricao: `Módulo ${targetModule.nome} criado a partir da proposta aceita.`,
@@ -775,7 +829,21 @@ async function materializeAcceptedProposal(
           });
         }
         if (proposalModule.baseModuleId !== targetModule.id) await tx.update(propostaModulos).set({ baseModuleId: targetModule.id }).where(eq(propostaModulos.id, proposalModule.id));
+
+        baseModulesList.push({
+          modulo_id: targetModule.id,
+          nome: targetModule.nome,
+          criado: moduleCreated,
+        });
       }
+
+      materializedBases.push({
+        base_id: targetBase.id,
+        nome: targetBase.nome,
+        tipo: targetBase.tipo,
+        criada: baseCreated,
+        modulos: baseModulesList,
+      });
     }
 
     await tx.insert(propostaHistorico).values({
@@ -786,7 +854,17 @@ async function materializeAcceptedProposal(
       descricao: `${createdClient ? "Cliente criado; " : "Cliente existente reutilizado; "}${createdBases} base(s) e ${createdModules} módulo(s) criados; ${reusedBases} base(s) e ${reusedModules} módulo(s) existentes reutilizados; ${linkedDocuments.length} documento(s) vinculado(s).`,
       usuario,
     });
-    return { changed: true, municipioId, createdClient, createdBases, createdModules, reusedBases, reusedModules, clienteNome: proposal.clienteNomeSnapshot };
+    return {
+      changed: true,
+      municipioId,
+      createdClient,
+      createdBases,
+      createdModules,
+      reusedBases,
+      reusedModules,
+      clienteNome: proposal.clienteNomeSnapshot,
+      bases: materializedBases,
+    };
   });
 
   if (auditInfo && result.changed) {
@@ -807,6 +885,7 @@ async function materializeAcceptedProposal(
         modulos_criados: result.createdModules,
         bases_reutilizadas: result.reusedBases,
         modulos_reutilizados: result.reusedModules,
+        bases: result.bases,
       },
     });
   }
@@ -862,6 +941,16 @@ export async function decidirProposta(fd: FormData) {
     });
   });
 
+  const pBases = await db.select().from(propostaBases).where(eq(propostaBases.propostaId, id));
+  const pModulos = pBases.length
+    ? await db.select().from(propostaModulos).where(inArray(propostaModulos.propostaBaseId, pBases.map((b) => b.id)))
+    : [];
+  const basesStructured = pBases.map((base) => ({
+    nome: base.nome,
+    tipo: base.tipo,
+    modulos: pModulos.filter((m) => m.propostaBaseId === base.id).map((m) => m.nome),
+  }));
+
   auditClient.log({
     category: "proposal",
     action: "proposal.decision_recorded",
@@ -869,15 +958,19 @@ export async function decidirProposta(fd: FormData) {
     actor,
     context,
     targets: [
-      { type: "proposal", id, label: `Proposta - ${proposal.clienteNomeSnapshot}` },
+      { type: "proposal", id, label: `Proposta ${proposal.tipo} - ${proposal.clienteNomeSnapshot}` },
       ...(proposal.municipioId ? [{ type: "municipality", id: proposal.municipioId, label: proposal.clienteNomeSnapshot }] : []),
     ],
     details: {
+      tipo: proposal.tipo,
       decisao: status,
       motivo: motivo ?? null,
       status_anterior: proposal.situacao,
       status_novo: status,
       cliente_nome: proposal.clienteNomeSnapshot,
+      bases_count: pBases.length,
+      modulos_count: pModulos.length,
+      bases: basesStructured,
     },
   });
 
