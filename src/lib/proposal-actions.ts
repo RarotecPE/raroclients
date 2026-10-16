@@ -23,6 +23,7 @@ import { isValidEmail } from "@/lib/module-enabled-email";
 import { assertPropostaTransition, assertProposalDeletionAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, PROPOSTA_ESPECIFICIDADES, PROPOSTA_MODALIDADES, requireProposalCancellationReason, selectProposalClientCandidate, type ProposalImmutableIdentity, type PropostaStatus } from "@/lib/proposal";
 import { sendProposalEmail } from "@/lib/proposal-email";
 import { norm } from "@/lib/utils";
+import { auditClient, getActionRequestContext, sessionToAuditActor, type AuditActor, type AuditContext } from "@/lib/audit";
 
 const text = (fd: FormData, key: string) => {
   const value = fd.get(key);
@@ -236,6 +237,8 @@ async function insertProposalScope(tx: Parameters<Parameters<typeof db.transacti
 
 export async function createProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const input = await validateProposalForm(fd);
 
   const proposalId = crypto.randomUUID();
@@ -259,16 +262,45 @@ export async function createProposta(fd: FormData) {
       descricao: `Proposta de ${input.tipo === "consultoria" ? "consultoria" : "implantação do sistema"} solicitada.`, usuario: userName(session),
     });
   });
+
+  auditClient.log({
+    category: "proposal",
+    action: "proposal.created",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [
+      { type: "proposal", id: proposalId, label: `Proposta ${input.tipo} - ${input.clienteNomeSnapshot}` },
+      ...(input.municipioId ? [{ type: "municipality", id: input.municipioId, label: input.clienteNomeSnapshot }] : []),
+    ],
+    details: {
+      tipo: input.tipo,
+      cliente_nome: input.clienteNomeSnapshot,
+      municipio: input.municipioNome,
+      uf: input.uf,
+      codigo_ibge: input.codigoIbge,
+      bases_count: input.items.length,
+      modulos_count: input.items.reduce((acc, i) => acc + i.modulos.length, 0),
+      atividade_conjunta: input.atividadeConjunta,
+      especificidades: input.especificidades,
+    },
+  });
+
   revalidatePath("/propostas");
   redirect(`/propostas/${proposalId}`);
 }
 
 export async function atualizarProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const original = await proposalById(id);
   if (original.situacao !== "solicitada" && original.situacao !== "em_retificacao") throw new Error("A proposta não pode ser editada no status atual.");
   const input = await validateProposalForm(fd, original);
+  const beforeBases = await db.select().from(propostaBases).where(eq(propostaBases.propostaId, id));
+  const beforeEspecificidades = await db.select().from(propostaEspecificidades).where(eq(propostaEspecificidades.propostaId, id));
+
   await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal) throw new Error("Proposta não encontrada.");
@@ -290,6 +322,39 @@ export async function atualizarProposta(fd: FormData) {
       usuario: userName(session),
     });
   });
+
+  auditClient.log({
+    category: "proposal",
+    action: "proposal.updated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [
+      { type: "proposal", id, label: `Proposta ${original.tipo} - ${original.clienteNomeSnapshot}` },
+      ...(original.municipioId ? [{ type: "municipality", id: original.municipioId, label: original.clienteNomeSnapshot }] : []),
+    ],
+    details: {
+      tipo: original.tipo,
+      cliente_nome: original.clienteNomeSnapshot,
+      bases_count: input.items.length,
+      modulos_count: input.items.reduce((acc, i) => acc + i.modulos.length, 0),
+    },
+    diff: {
+      before: {
+        atividadeConjunta: original.atividadeConjunta,
+        observacoes: original.observacoes,
+        especificidades: beforeEspecificidades.map((e) => e.especificidade),
+        basesCount: beforeBases.length,
+      },
+      after: {
+        atividadeConjunta: input.atividadeConjunta,
+        observacoes: input.observacoes,
+        especificidades: input.especificidades,
+        basesCount: input.items.length,
+      },
+    },
+  });
+
   revalidatePath(`/propostas/${id}`);
   revalidatePath("/propostas");
   redirect(`/propostas/${id}`);
@@ -303,13 +368,17 @@ async function proposalById(id: string) {
 
 export async function cancelarProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const motivo = requireProposalCancellationReason(text(fd, "motivo"));
   const usuario = userName(session);
+  let proposalData: typeof propostas.$inferSelect | null = null;
   await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal || proposal.excluidaAt) throw new Error("Proposta não encontrada.");
     assertPropostaTransition(proposal.situacao, "cancelada");
+    proposalData = proposal;
     const canceladaAt = new Date();
     await tx.update(propostas).set({
       situacao: "cancelada",
@@ -326,18 +395,44 @@ export async function cancelarProposta(fd: FormData) {
       usuario,
     });
   });
+
+  if (proposalData) {
+    const p = proposalData as typeof propostas.$inferSelect;
+    auditClient.log({
+      category: "proposal",
+      action: "proposal.cancelled",
+      severity: "WARNING",
+      actor,
+      context,
+      targets: [
+        { type: "proposal", id, label: `Proposta - ${p.clienteNomeSnapshot}` },
+        ...(p.municipioId ? [{ type: "municipality", id: p.municipioId, label: p.clienteNomeSnapshot }] : []),
+      ],
+      details: {
+        motivo,
+        situacao_anterior: "solicitada",
+        situacao_nova: "cancelada",
+        cliente_nome: p.clienteNomeSnapshot,
+      },
+    });
+  }
+
   revalidatePath(`/propostas/${id}`);
   revalidatePath("/propostas");
 }
 
 export async function excluirProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const usuario = userName(session);
+  let proposalData: typeof propostas.$inferSelect | null = null;
   await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal) throw new Error("Proposta não encontrada.");
     assertProposalDeletionAllowed(proposal.situacao, proposal.excluidaAt);
+    proposalData = proposal;
     const [updated] = await tx.update(propostas).set({ excluidaAt: new Date(), excluidaPor: usuario })
       .where(and(eq(propostas.id, id), eq(propostas.situacao, "cancelada"), isNull(propostas.excluidaAt)))
       .returning({ id: propostas.id });
@@ -351,12 +446,35 @@ export async function excluirProposta(fd: FormData) {
       usuario,
     });
   });
+
+  if (proposalData) {
+    const p = proposalData as typeof propostas.$inferSelect;
+    auditClient.log({
+      category: "proposal",
+      action: "proposal.deleted",
+      severity: "CRITICAL",
+      actor,
+      context,
+      targets: [
+        { type: "proposal", id, label: `Proposta - ${p.clienteNomeSnapshot}` },
+        ...(p.municipioId ? [{ type: "municipality", id: p.municipioId, label: p.clienteNomeSnapshot }] : []),
+      ],
+      details: {
+        cliente_nome: p.clienteNomeSnapshot,
+        tipo: p.tipo,
+        situacao: p.situacao,
+      },
+    });
+  }
+
   revalidatePath("/propostas");
   redirect("/propostas");
 }
 
 export async function uploadPropostaDocumento(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const proposal = await proposalById(id);
   if (proposal.situacao !== "solicitada" && proposal.situacao !== "em_retificacao") throw new Error("A proposta não está aguardando um documento.");
@@ -385,6 +503,27 @@ export async function uploadPropostaDocumento(fd: FormData) {
         descricao: `Versão ${version} do documento anexada.`, usuario: userName(session),
       });
     });
+
+    auditClient.log({
+      category: "proposal",
+      action: "proposal.document_uploaded",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [
+        { type: "proposal", id, label: `Proposta - ${proposal.clienteNomeSnapshot}` },
+        { type: "document", id: documentId, label: text(fd, "nome") ?? uploaded.originalName },
+        ...(proposal.municipioId ? [{ type: "municipality", id: proposal.municipioId, label: proposal.clienteNomeSnapshot }] : []),
+      ],
+      details: {
+        versao: version,
+        documento_id: documentId,
+        arquivo_nome: uploaded.originalName,
+        tamanho_bytes: uploaded.size,
+        mime_type: uploaded.contentType,
+        cliente_nome: proposal.clienteNomeSnapshot,
+      },
+    });
   } catch (error) {
     if (storageKey) await deleteDocumentFile(storageKey).catch(() => undefined);
     await db.transaction(async (tx) => {
@@ -403,6 +542,8 @@ export async function uploadPropostaDocumento(fd: FormData) {
 
 export async function enviarProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const recipientName = required(fd, "destinatarioNome");
   const recipientEmail = required(fd, "destinatarioEmail").toLowerCase();
@@ -441,12 +582,34 @@ export async function enviarProposta(fd: FormData) {
       descricao: `Proposta enviada para ${recipientName}.`, usuario: userName(session), destinatarioEmail: recipientEmail,
     });
   });
+
+  auditClient.log({
+    category: "proposal",
+    action: "proposal.sent_by_email",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [
+      { type: "proposal", id, label: `Proposta - ${proposal.clienteNomeSnapshot}` },
+      { type: "document", id: document.id, label: document.nome },
+      ...(proposal.municipioId ? [{ type: "municipality", id: proposal.municipioId, label: proposal.clienteNomeSnapshot }] : []),
+    ],
+    details: {
+      destinatario_nome: recipientName,
+      destinatario_email: recipientEmail,
+      versao: document.propostaVersao,
+      cliente_nome: proposal.clienteNomeSnapshot,
+    },
+  });
+
   revalidatePath(`/propostas/${id}`);
   revalidatePath("/propostas");
 }
 
 export async function marcarPropostaEnviada(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const proposal = await proposalById(id);
   assertPropostaTransition(proposal.situacao, "enviada");
@@ -464,12 +627,34 @@ export async function marcarPropostaEnviada(fd: FormData) {
       usuario: userName(session),
     });
   });
+
+  auditClient.log({
+    category: "proposal",
+    action: "proposal.marked_sent",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [
+      { type: "proposal", id, label: `Proposta - ${proposal.clienteNomeSnapshot}` },
+      ...(proposal.municipioId ? [{ type: "municipality", id: proposal.municipioId, label: proposal.clienteNomeSnapshot }] : []),
+    ],
+    details: {
+      cliente_nome: proposal.clienteNomeSnapshot,
+      situacao_anterior: "gerada",
+      situacao_nova: "enviada",
+    },
+  });
+
   revalidatePath(`/propostas/${id}`);
   revalidatePath("/propostas");
 }
 
-async function materializeAcceptedProposal(id: string, usuario: string) {
-  return db.transaction(async (tx) => {
+async function materializeAcceptedProposal(
+  id: string,
+  usuario: string,
+  auditInfo?: { actor: AuditActor; context: AuditContext },
+) {
+  const result = await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal) throw new Error("Proposta não encontrada.");
     if (proposal.situacao !== "aceita") throw new Error("Somente propostas aceitas podem gerar cadastros.");
@@ -479,7 +664,7 @@ async function materializeAcceptedProposal(id: string, usuario: string) {
       ? await tx.select().from(propostaModulos).where(inArray(propostaModulos.propostaBaseId, proposalBaseRows.map((base) => base.id))).orderBy(propostaModulos.id).for("update")
       : [];
     const hadPendingItems = proposalBaseRows.some((base) => !base.baseId) || proposalModuleRows.some((module) => !module.baseModuleId);
-    if (proposal.municipioId && !hadPendingItems) return { changed: false, municipioId: proposal.municipioId, createdClient: false, createdBases: 0, createdModules: 0, reusedBases: 0, reusedModules: 0 };
+    if (proposal.municipioId && !hadPendingItems) return { changed: false, municipioId: proposal.municipioId, createdClient: false, createdBases: 0, createdModules: 0, reusedBases: 0, reusedModules: 0, clienteNome: proposal.clienteNomeSnapshot };
 
     let client: typeof municipios.$inferSelect | undefined;
     let createdClient = false;
@@ -601,8 +786,32 @@ async function materializeAcceptedProposal(id: string, usuario: string) {
       descricao: `${createdClient ? "Cliente criado; " : "Cliente existente reutilizado; "}${createdBases} base(s) e ${createdModules} módulo(s) criados; ${reusedBases} base(s) e ${reusedModules} módulo(s) existentes reutilizados; ${linkedDocuments.length} documento(s) vinculado(s).`,
       usuario,
     });
-    return { changed: true, municipioId, createdClient, createdBases, createdModules, reusedBases, reusedModules };
+    return { changed: true, municipioId, createdClient, createdBases, createdModules, reusedBases, reusedModules, clienteNome: proposal.clienteNomeSnapshot };
   });
+
+  if (auditInfo && result.changed) {
+    auditClient.log({
+      category: "proposal",
+      action: "proposal.materialized",
+      severity: "CRITICAL",
+      actor: auditInfo.actor,
+      context: auditInfo.context,
+      targets: [
+        { type: "proposal", id, label: `Proposta - ${result.clienteNome}` },
+        { type: "municipality", id: result.municipioId, label: result.clienteNome },
+      ],
+      details: {
+        cliente_criado: result.createdClient,
+        municipio_id: result.municipioId,
+        bases_criadas: result.createdBases,
+        modulos_criados: result.createdModules,
+        bases_reutilizadas: result.reusedBases,
+        modulos_reutilizados: result.reusedModules,
+      },
+    });
+  }
+
+  return result;
 }
 
 async function recordMaterializationFailure(id: string, usuario: string, error: unknown) {
@@ -618,9 +827,11 @@ async function recordMaterializationFailure(id: string, usuario: string, error: 
 
 export async function materializarCadastrosProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   try {
-    const result = await materializeAcceptedProposal(id, userName(session));
+    const result = await materializeAcceptedProposal(id, userName(session), { actor, context });
     if (result.changed) await syncPendencias();
     revalidatePath(`/clientes/${result.municipioId}`);
   } catch (error) {
@@ -634,6 +845,8 @@ export async function materializarCadastrosProposta(fd: FormData) {
 
 export async function decidirProposta(fd: FormData) {
   const session = await requireServerActionPermission();
+  const actor = sessionToAuditActor(session);
+  const context = await getActionRequestContext();
   const id = required(fd, "id");
   const status = required(fd, "status") as PropostaStatus;
   if (!(["aceita", "recusada", "em_retificacao"] as string[]).includes(status)) throw new Error("Decisão inválida.");
@@ -648,9 +861,29 @@ export async function decidirProposta(fd: FormData) {
       descricao: motivo ?? "Proposta aceita.", usuario: userName(session),
     });
   });
+
+  auditClient.log({
+    category: "proposal",
+    action: "proposal.decision_recorded",
+    severity: status === "recusada" ? "WARNING" : "INFO",
+    actor,
+    context,
+    targets: [
+      { type: "proposal", id, label: `Proposta - ${proposal.clienteNomeSnapshot}` },
+      ...(proposal.municipioId ? [{ type: "municipality", id: proposal.municipioId, label: proposal.clienteNomeSnapshot }] : []),
+    ],
+    details: {
+      decisao: status,
+      motivo: motivo ?? null,
+      status_anterior: proposal.situacao,
+      status_novo: status,
+      cliente_nome: proposal.clienteNomeSnapshot,
+    },
+  });
+
   if (status === "aceita" && text(fd, "criarCadastros") === "sim") {
     try {
-      const result = await materializeAcceptedProposal(id, userName(session));
+      const result = await materializeAcceptedProposal(id, userName(session), { actor, context });
       if (result.changed) await syncPendencias();
       revalidatePath(`/clientes/${result.municipioId}`);
     } catch (error) {

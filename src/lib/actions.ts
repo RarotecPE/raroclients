@@ -22,6 +22,8 @@ import { basesMissingModule, parseNewChildBases, validateChildBaseLinks } from "
 import {
   optLabel,
 } from "@/lib/constants";
+import { auditClient, getActionRequestContext, sessionToAuditActor } from "@/lib/audit";
+
 import { deleteDocumentFile, fileFromFormData, uploadDocumentFile } from "@/lib/document-storage";
 import { CONTRACT_DOCUMENT_TYPE, CONTRACT_UNLINK_REASONS, documentTypeForContext, validateBaseAvailability, validateContractModuleSelection } from "@/lib/contract-reference";
 import { logEvent, syncPendencias } from "@/lib/domain";
@@ -189,7 +191,9 @@ function clienteChangeDescription(
 /* ---------------- Clientes ---------------- */
 
 export async function createMunicipio(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const clienteNome = req(fd, "clienteNome");
   const municipio = req(fd, "municipio");
   const uf = req(fd, "uf").toUpperCase().slice(0, 2);
@@ -213,12 +217,31 @@ export async function createMunicipio(fd: FormData) {
     })
     .returning();
   await logEvent({ tipo: "municipio_criado", descricao: `Cliente ${clienteNome} criado.`, municipioId: row.id });
+
+  auditClient.log({
+    category: "client",
+    action: "municipality.created",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "municipality", id: row.id, label: `${clienteNome} (${uf})` }],
+    details: {
+      municipio,
+      uf,
+      codigo_ibge: codigoIbge,
+      populacao: row.populacao,
+      situacao: row.situacao,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function updateMunicipio(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const [before] = await db.select().from(municipios).where(eq(municipios.id, id));
   if (!before) {
@@ -248,30 +271,94 @@ export async function updateMunicipio(fd: FormData) {
   if (descricao) {
     await logEvent({ tipo: "municipio_atualizado", descricao, municipioId: id });
   }
+
+  if (before.situacao !== next.situacao) {
+    auditClient.log({
+      category: "client",
+      action: "municipality.status_changed",
+      severity: next.situacao === "cliente_suspenso" || next.situacao === "cliente_encerrado" ? "WARNING" : "INFO",
+      actor,
+      context,
+      targets: [{ type: "municipality", id, label: `${next.clienteNome} (${next.uf})` }],
+      diff: {
+        before: { situacao: before.situacao },
+        after: { situacao: next.situacao },
+      },
+      details: {
+        cliente_nome: next.clienteNome,
+        previous_status: before.situacao,
+        new_status: next.situacao,
+      },
+    });
+  }
+
+  const hasDataChanges =
+    before.clienteNome !== next.clienteNome ||
+    before.populacao !== next.populacao ||
+    sameText(before.dadosAdministrativos) !== sameText(next.dadosAdministrativos) ||
+    sameText(before.observacoes) !== sameText(next.observacoes);
+
+  if (hasDataChanges) {
+    auditClient.log({
+      category: "client",
+      action: "municipality.updated",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "municipality", id, label: `${next.clienteNome} (${next.uf})` }],
+      diff: {
+        before: {
+          clienteNome: before.clienteNome,
+          populacao: before.populacao,
+          dadosAdministrativos: before.dadosAdministrativos,
+          observacoes: before.observacoes,
+        },
+        after: {
+          clienteNome: next.clienteNome,
+          populacao: next.populacao,
+          dadosAdministrativos: next.dadosAdministrativos,
+          observacoes: next.observacoes,
+        },
+      },
+      details: {
+        cliente_nome: next.clienteNome,
+        uf: next.uf,
+      },
+    });
+  }
+
   await syncPendencias();
   done();
 }
+
 
 /* ---------------- Bases ---------------- */
 
 export async function createBase(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const municipioId = req(fd, "municipioId");
   await assertClienteOperacional(municipioId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   const nome = req(fd, "nome");
+  const tipo = str(fd, "tipo") ?? "outros";
+  const cnpj = cnpjValue(fd, "cnpj");
   const newChildren = parseNewChildBases(str(fd, "inferioresNovas"));
   const existingChildIds = fd.getAll("inferioresExistentesIds").filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+  let createdRowId = "";
   await db.transaction(async (tx) => {
     const allBases = await tx.select().from(bases).where(eq(bases.municipioId, municipioId)).orderBy(bases.id).for("update");
     validateChildBaseLinks(null, municipioId, existingChildIds, newChildren, allBases);
     const [row] = await tx.insert(bases).values({
       municipioId,
       nome,
-      tipo: str(fd, "tipo") ?? "outros",
-      cnpj: cnpjValue(fd, "cnpj"),
+      tipo,
+      cnpj,
       observacoes: str(fd, "observacoes"),
     }).returning();
+    createdRowId = row.id;
     await tx.insert(eventos).values({ tipo: "base_criada", descricao: `Base ${nome} criada.`, municipioId, baseId: row.id, data: today(), usuario });
     if (newChildren.length > 0) {
       const created = await tx.insert(bases).values(newChildren.map((child) => ({ ...child, municipioId, baseSuperiorId: row.id }))).returning();
@@ -286,16 +373,57 @@ export async function createBase(fd: FormData) {
       })));
     }
   });
+
+  auditClient.log({
+    category: "client",
+    action: "base.created",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "base", id: createdRowId, label: `${nome} (${cliente?.clienteNome ?? municipioId})` }],
+    details: {
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
+      tipo,
+      cnpj,
+      new_children_count: newChildren.length,
+      existing_children_linked: existingChildIds.length,
+    },
+  });
+
+  if (existingChildIds.length > 0) {
+    auditClient.log({
+      category: "client",
+      action: "base.hierarchy_linked",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "base", id: createdRowId, label: `${nome} (${cliente?.clienteNome ?? municipioId})` }],
+      details: {
+        superior_base_id: createdRowId,
+        superior_base_nome: nome,
+        linked_children_count: existingChildIds.length,
+        child_base_ids: existingChildIds,
+      },
+    });
+  }
+
   await syncPendencias();
   done();
 }
 
 export async function updateBase(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const base = await assertBaseCadastrada(id);
   const municipioId = base.municipioId;
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   const nome = req(fd, "nome");
+  const tipo = str(fd, "tipo") ?? "outros";
+  const cnpj = cnpjValue(fd, "cnpj");
+  const observacoes = str(fd, "observacoes");
   const newChildren = parseNewChildBases(str(fd, "inferioresNovas"));
   const existingChildIds = fd.getAll("inferioresExistentesIds").filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
@@ -306,9 +434,9 @@ export async function updateBase(fd: FormData) {
     validateChildBaseLinks(current, municipioId, existingChildIds, newChildren, allBases);
     await tx.update(bases).set({
       nome,
-      tipo: str(fd, "tipo") ?? "outros",
-      cnpj: cnpjValue(fd, "cnpj"),
-      observacoes: str(fd, "observacoes"),
+      tipo,
+      cnpj,
+      observacoes,
     }).where(eq(bases.id, id));
     await tx.insert(eventos).values({ tipo: "base_atualizada", descricao: `Base ${nome} atualizada.`, municipioId, baseId: id, data: today(), usuario });
     if (newChildren.length > 0) {
@@ -324,40 +452,123 @@ export async function updateBase(fd: FormData) {
       })));
     }
   });
+
+  auditClient.log({
+    category: "client",
+    action: "base.updated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "base", id, label: `${nome} (${cliente?.clienteNome ?? municipioId})` }],
+    diff: {
+      before: {
+        nome: base.nome,
+        tipo: base.tipo,
+        cnpj: base.cnpj,
+        observacoes: base.observacoes,
+      },
+      after: {
+        nome,
+        tipo,
+        cnpj,
+        observacoes,
+      },
+    },
+    details: {
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
+    },
+  });
+
+  if (existingChildIds.length > 0) {
+    auditClient.log({
+      category: "client",
+      action: "base.hierarchy_linked",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "base", id, label: `${nome} (${cliente?.clienteNome ?? municipioId})` }],
+      details: {
+        superior_base_id: id,
+        superior_base_nome: nome,
+        linked_children_count: existingChildIds.length,
+        child_base_ids: existingChildIds,
+      },
+    });
+  }
+
   await syncPendencias();
   done();
 }
 
 export async function desvincularBaseSuperior(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const base = await assertBaseCadastrada(id);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, base.municipioId));
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+  let superiorNome: string | null = null;
+  let previousSuperiorId: string | null = null;
   await db.transaction(async (tx) => {
     const allBases = await tx.select().from(bases).where(eq(bases.municipioId, base.municipioId)).orderBy(bases.id).for("update");
     const current = allBases.find((item) => item.id === id);
     if (!current?.baseSuperiorId) throw new Error("Esta base não possui base superior.");
+    previousSuperiorId = current.baseSuperiorId;
     const superior = allBases.find((item) => item.id === current.baseSuperiorId);
+    superiorNome = superior?.nome ?? null;
     await tx.update(bases).set({ baseSuperiorId: null }).where(eq(bases.id, id));
     await tx.insert(eventos).values({
       tipo: "base_desvinculada_superior", descricao: `Base ${current.nome} desvinculada da base superior ${superior?.nome ?? "anterior"}.`,
       municipioId: base.municipioId, baseId: id, data: today(), usuario,
     });
   });
+
+  auditClient.log({
+    category: "client",
+    action: "base.hierarchy_unlinked",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "base", id, label: `${base.nome} (${cliente?.clienteNome ?? base.municipioId})` }],
+    details: {
+      municipio_id: base.municipioId,
+      cliente_nome: cliente?.clienteNome,
+      previous_superior_id: previousSuperiorId,
+      previous_superior_nome: superiorNome,
+    },
+  });
+
   done();
 }
 
 export async function desabilitarBase(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const motivo = req(fd, "motivo");
   const data = today();
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
 
+  let requestedBaseNome = "";
+  let requestedBaseMunicipioId = "";
+  let clienteNome: string | null = null;
+  let disabledBasesCount = 0;
+  let disabledModulesCount = 0;
+  let disabledBaseIds: string[] = [];
+  let disabledModuleIds: string[] = [];
+
   await db.transaction(async (tx) => {
     const [requestedBase] = await tx.select().from(bases).where(eq(bases.id, id));
     if (!requestedBase) throw new Error("Base nao encontrada.");
     await assertClienteOperacional(requestedBase.municipioId);
+    requestedBaseNome = requestedBase.nome;
+    requestedBaseMunicipioId = requestedBase.municipioId;
+
+    const [cliente] = await tx.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, requestedBase.municipioId));
+    clienteNome = cliente?.clienteNome ?? null;
 
     const allBases = await tx
       .select()
@@ -373,6 +584,11 @@ export async function desabilitarBase(fd: FormData) {
       .orderBy(baseModules.id)
       .for("update");
     const plan = planBaseDisable(id, allBases, allModules);
+
+    disabledBasesCount = plan.baseIdsToDisable.length;
+    disabledModulesCount = plan.moduleIdsToDisable.length;
+    disabledBaseIds = plan.baseIdsToDisable;
+    disabledModuleIds = plan.moduleIdsToDisable;
 
     if (plan.baseIdsToDisable.length > 0) {
       await tx
@@ -414,20 +630,54 @@ export async function desabilitarBase(fd: FormData) {
       })));
     }
   });
+
+  auditClient.log({
+    category: "client",
+    action: "base.disabled_planned",
+    severity: "WARNING",
+    actor,
+    context,
+    targets: [{ type: "base", id, label: `${requestedBaseNome} (${clienteNome ?? requestedBaseMunicipioId})` }],
+    details: {
+      motivo,
+      municipio_id: requestedBaseMunicipioId,
+      cliente_nome: clienteNome,
+      disabled_bases_count: disabledBasesCount,
+      disabled_modules_count: disabledModulesCount,
+      disabled_base_ids: disabledBaseIds,
+      disabled_module_ids: disabledModuleIds,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function reabilitarBase(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const data = today();
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+
+  let requestedBaseNome = "";
+  let requestedBaseMunicipioId = "";
+  let clienteNome: string | null = null;
+  let reactivatedBasesCount = 0;
+  let reactivatedModulesCount = 0;
+  let reactivatedBaseIds: string[] = [];
+  let reactivatedModuleIds: string[] = [];
 
   await db.transaction(async (tx) => {
     const [requestedBase] = await tx.select().from(bases).where(eq(bases.id, id));
     if (!requestedBase) throw new Error("Base nao encontrada.");
     await assertClienteOperacional(requestedBase.municipioId);
+    requestedBaseNome = requestedBase.nome;
+    requestedBaseMunicipioId = requestedBase.municipioId;
+
+    const [cliente] = await tx.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, requestedBase.municipioId));
+    clienteNome = cliente?.clienteNome ?? null;
 
     const allBases = await tx
       .select()
@@ -442,6 +692,11 @@ export async function reabilitarBase(fd: FormData) {
       .orderBy(baseModules.id)
       .for("update");
     const plan = planBaseReactivation(id, allBases, allModules);
+
+    reactivatedBasesCount = plan.baseIdsToReactivate.length;
+    reactivatedModulesCount = plan.moduleIdsToReactivate.length;
+    reactivatedBaseIds = plan.baseIdsToReactivate;
+    reactivatedModuleIds = plan.moduleIdsToReactivate;
 
     if (plan.baseIdsToReactivate.length > 0) {
       await tx
@@ -483,17 +738,39 @@ export async function reabilitarBase(fd: FormData) {
       })));
     }
   });
+
+  auditClient.log({
+    category: "client",
+    action: "base.reactivated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "base", id, label: `${requestedBaseNome} (${clienteNome ?? requestedBaseMunicipioId})` }],
+    details: {
+      municipio_id: requestedBaseMunicipioId,
+      cliente_nome: clienteNome,
+      reactivated_bases_count: reactivatedBasesCount,
+      reactivated_modules_count: reactivatedModulesCount,
+      reactivated_base_ids: reactivatedBaseIds,
+      reactivated_module_ids: reactivatedModuleIds,
+    },
+  });
+
   await syncPendencias();
   done();
 }
+
 
 /* ---------------- Módulos ---------------- */
 
 export async function createModulo(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const baseId = req(fd, "baseId");
   const base = await assertBaseOperacional(baseId);
   const municipioId = base.municipioId;
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   if (str(fd, "municipioId") !== municipioId) throw new Error("A base deve pertencer ao cliente selecionado.");
   const nome = req(fd, "nome");
   const observacoes = str(fd, "observacoes");
@@ -508,6 +785,8 @@ export async function createModulo(fd: FormData) {
   }
 
   const usuario = session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+  let createdModuleId = "";
+  let replicatedCopiesCount = 0;
   await db.transaction(async (tx) => {
     const allBases = await tx.select().from(bases).where(eq(bases.municipioId, municipioId)).orderBy(bases.id).for("update");
     const current = allBases.find((item) => item.id === baseId);
@@ -526,6 +805,7 @@ export async function createModulo(fd: FormData) {
       .insert(baseModules)
       .values({ baseId, nome, observacoes })
       .returning();
+    createdModuleId = modulo.id;
 
     if (deveCriarResponsavel && responsavelNome) {
       await tx.insert(moduloResponsaveis).values({
@@ -542,6 +822,7 @@ export async function createModulo(fd: FormData) {
     if (replicar) {
       const missing = basesMissingModule(activeChildren, existing, nome);
       if (missing.length > 0) {
+        replicatedCopiesCount = missing.length;
         const copies = await tx.insert(baseModules).values(missing.map((child) => ({ baseId: child.id, nome, observacoes }))).returning();
         await tx.insert(eventos).values(copies.map((copy) => ({
           tipo: "modulo_replicado", descricao: `Módulo ${nome} replicado da base ${base.nome}.`,
@@ -550,14 +831,55 @@ export async function createModulo(fd: FormData) {
       }
     }
   });
+
+  auditClient.log({
+    category: "client",
+    action: "module.created",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id: createdModuleId, label: `${nome} - ${base.nome} (${cliente?.clienteNome ?? municipioId})` }],
+    details: {
+      nome,
+      base_id: baseId,
+      base_nome: base.nome,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
+      replicated: replicar,
+      replicated_copies_count: replicatedCopiesCount,
+    },
+  });
+
+  if (deveCriarResponsavel && responsavelNome) {
+    auditClient.log({
+      category: "client",
+      action: "module.responsible_assigned",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "responsible", id: createdModuleId, label: `${responsavelNome} (${nome} - ${base.nome})` }],
+      details: {
+        base_module_id: createdModuleId,
+        module_name: nome,
+        base_name: base.nome,
+        nome: responsavelNome,
+        email: responsavelEmail,
+        celular: responsavelCelular,
+      },
+    });
+  }
+
   await syncPendencias();
   done();
 }
 
 export async function createModulosEmGrupo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const municipioId = req(fd, "municipioId");
   await assertClienteOperacional(municipioId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   const nome = req(fd, "nome");
   const observacoes = str(fd, "observacoes");
   const baseIds = [...new Set(fd.getAll("baseIds").filter((v): v is string => typeof v === "string" && v.trim() !== ""))];
@@ -593,61 +915,155 @@ export async function createModulosEmGrupo(fd: FormData) {
   for (const row of rows) {
     await logEvent({ tipo: "modulo_criado", descricao: `Módulo ${nome} criado na base.`, municipioId, baseId: row.baseId, baseModuleId: row.id });
   }
+
+  auditClient.log({
+    category: "client",
+    action: "module.created_batch",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "municipality", id: municipioId, label: cliente?.clienteNome ?? municipioId }],
+    details: {
+      module_name: nome,
+      created_count: rows.length,
+      base_ids: rows.map((r) => r.baseId),
+      cliente_nome: cliente?.clienteNome,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function createResponsavelModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const municipioId = req(fd, "municipioId");
   const baseModuleId = req(fd, "baseModuleId");
-  await assertModuloOperacional(baseModuleId);
+  const modulo = await assertModuloOperacional(baseModuleId);
+  const base = await assertBaseOperacional(modulo.baseId);
   await assertClienteOperacional(municipioId);
   const nome = req(fd, "nome");
+  const email = str(fd, "email");
+  const celular = phoneDigits(fd, "celular");
+
   await db.insert(moduloResponsaveis).values({
     municipioId,
     baseModuleId,
     nome,
-    email: str(fd, "email"),
-    celular: phoneDigits(fd, "celular"),
+    email,
+    celular,
   });
   await logEvent({ tipo: "responsavel_criado", descricao: `Responsavel ${nome} vinculado ao modulo.`, municipioId, baseModuleId });
+
+  auditClient.log({
+    category: "client",
+    action: "module.responsible_assigned",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "responsible", id: baseModuleId, label: `${nome} (${modulo.nome} - ${base.nome})` }],
+    details: {
+      base_module_id: baseModuleId,
+      module_name: modulo.nome,
+      base_name: base.nome,
+      municipio_id: municipioId,
+      nome,
+      email,
+      celular,
+    },
+  });
+
   done();
 }
 
 export async function updateResponsavelModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const responsavel = await assertResponsavelOperacional(id);
   const municipioId = responsavel.municipioId;
   const baseModuleId = responsavel.baseModuleId;
   const nome = req(fd, "nome");
+  const email = str(fd, "email");
+  const celular = phoneDigits(fd, "celular");
+
   await db
     .update(moduloResponsaveis)
     .set({
       nome,
-      email: str(fd, "email"),
-      celular: phoneDigits(fd, "celular"),
+      email,
+      celular,
     })
     .where(eq(moduloResponsaveis.id, id));
   await logEvent({ tipo: "responsavel_atualizado", descricao: `Responsavel ${nome} atualizado.`, municipioId, baseModuleId });
+
+  auditClient.log({
+    category: "client",
+    action: "module.responsible_updated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "responsible", id, label: nome }],
+    diff: {
+      before: {
+        nome: responsavel.nome,
+        email: responsavel.email,
+        celular: responsavel.celular,
+      },
+      after: {
+        nome,
+        email,
+        celular,
+      },
+    },
+    details: {
+      base_module_id: baseModuleId,
+      municipio_id: municipioId,
+    },
+  });
+
   done();
 }
 
 export async function deleteResponsavelModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const responsavel = await assertResponsavelOperacional(id);
   const municipioId = responsavel.municipioId;
   const baseModuleId = responsavel.baseModuleId;
-  const nome = str(fd, "nome") ?? "Responsavel";
+  const nome = str(fd, "nome") ?? responsavel.nome;
+
   await db.delete(moduloResponsaveis).where(eq(moduloResponsaveis.id, id));
   await logEvent({ tipo: "responsavel_removido", descricao: `${nome} removido e desvinculado do modulo.`, municipioId, baseModuleId });
+
+  auditClient.log({
+    category: "client",
+    action: "module.responsible_removed",
+    severity: "WARNING",
+    actor,
+    context,
+    targets: [{ type: "responsible", id, label: nome }],
+    details: {
+      base_module_id: baseModuleId,
+      municipio_id: municipioId,
+      nome,
+      email: responsavel.email,
+    },
+  });
+
   done();
 }
 
+
 export async function habilitarModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const modulo = await assertModuloOperacional(id);
   const [base] = await db.select().from(bases).where(eq(bases.id, modulo.baseId));
@@ -681,8 +1097,9 @@ export async function habilitarModulo(fd: FormData) {
   }
   await logEvent({ tipo: "habilitado", descricao: "Módulo habilitado.", municipioId, baseModuleId: id, data: habilitadoAt });
   const [cliente] = await db.select().from(municipios).where(eq(municipios.id, municipioId));
+  let emailEnviado = false;
   if (solicitanteEmail) {
-    const emailEnviado = await attemptModuleEnabledEmail({
+    emailEnviado = await attemptModuleEnabledEmail({
       moduleId: modulo.id,
       moduleName: modulo.nome,
       baseName: base.nome,
@@ -715,6 +1132,20 @@ export async function habilitarModulo(fd: FormData) {
         data: habilitadoAt,
       });
     }
+
+    auditClient.log({
+      category: "client",
+      action: "module.notification_sent",
+      severity: emailEnviado ? "INFO" : "WARNING",
+      actor,
+      context,
+      targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome} (${cliente?.clienteNome ?? municipioId})` }],
+      details: {
+        recipient_email: solicitanteEmail,
+        requester_name: solicitante,
+        success: emailEnviado,
+      },
+    });
   } else {
     await logEvent({
       tipo: "aviso_habilitacao_email_ignorado",
@@ -724,12 +1155,37 @@ export async function habilitarModulo(fd: FormData) {
       data: habilitadoAt,
     });
   }
+
+  auditClient.log({
+    category: "client",
+    action: "module.enabled",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome} (${cliente?.clienteNome ?? municipioId})` }],
+    details: {
+      base_id: base.id,
+      base_nome: base.nome,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
+      habilitado_at: habilitadoAt,
+      solicitacao_at: solicitacaoAt,
+      solicitante,
+      solicitante_email: solicitanteEmail,
+      solicitacao_origem: origem,
+      implantacao_status: str(fd, "implantacaoStatus") ?? null,
+      email_sent: emailEnviado,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function updateModuloObservacoes(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
   const modulo = await assertModuloOperacional(id);
   const base = await assertBaseOperacional(modulo.baseId);
@@ -744,11 +1200,32 @@ export async function updateModuloObservacoes(fd: FormData) {
     baseId: base.id,
     baseModuleId: id,
   });
+
+  auditClient.log({
+    category: "client",
+    action: "module.updated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome}` }],
+    diff: {
+      before: { observacoes: modulo.observacoes },
+      after: { observacoes },
+    },
+    details: {
+      base_id: base.id,
+      base_nome: base.nome,
+      municipio_id: base.municipioId,
+    },
+  });
+
   done();
 }
 
 export async function reenviarEmailHabilitacao(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "baseModuleId");
   const [modulo] = await db.select().from(baseModules).where(eq(baseModules.id, id));
   if (!modulo?.habilitadoAt) throw new Error("Módulo habilitado não encontrado.");
@@ -793,15 +1270,33 @@ export async function reenviarEmailHabilitacao(fd: FormData) {
       data: modulo.habilitadoAt,
     });
   }
+
+  auditClient.log({
+    category: "client",
+    action: "module.notification_resent",
+    severity: emailEnviado ? "INFO" : "WARNING",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${modulo.nome} - ${base.nome} (${cliente?.clienteNome ?? base.municipioId})` }],
+    details: {
+      recipient_email: solicitanteEmail,
+      requester_name: modulo.solicitante,
+      success: emailEnviado,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function migracaoModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
-  await assertModuloOperacional(id);
-  const municipioId = str(fd, "municipioId");
+  const moduloBefore = await assertModuloOperacional(id);
+  const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
+  const municipioId = str(fd, "municipioId") ?? base?.municipioId;
   const inicio = str(fd, "migracaoInicio");
   const fim = str(fd, "migracaoFim");
   await db.update(baseModules).set({ migracaoInicio: inicio, migracaoFim: fim }).where(eq(baseModules.id, id));
@@ -812,39 +1307,108 @@ export async function migracaoModulo(fd: FormData) {
     baseModuleId: id,
     data: fim ?? inicio ?? today(),
   });
+
+  auditClient.log({
+    category: "client",
+    action: "module.migration_updated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    diff: {
+      before: {
+        migracaoInicio: moduloBefore.migracaoInicio,
+        migracaoFim: moduloBefore.migracaoFim,
+      },
+      after: {
+        migracaoInicio: inicio,
+        migracaoFim: fim,
+      },
+    },
+    details: {
+      inicio,
+      fim,
+      concluida: !!fim,
+      municipio_id: municipioId,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function implantacaoModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
-  await assertModuloOperacional(id);
-  const municipioId = str(fd, "municipioId");
+  const moduloBefore = await assertModuloOperacional(id);
+  const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
+  const municipioId = str(fd, "municipioId") ?? base?.municipioId;
   const status = req(fd, "implantacaoStatus");
   await db.update(baseModules).set({ implantacaoStatus: status }).where(eq(baseModules.id, id));
   await logEvent({ tipo: "implantacao", descricao: `Implantação: ${status}.`, municipioId, baseModuleId: id });
+
+  auditClient.log({
+    category: "client",
+    action: "module.status_changed",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    diff: {
+      before: { implantacaoStatus: moduloBefore.implantacaoStatus },
+      after: { implantacaoStatus: status },
+    },
+    details: {
+      previous_status: moduloBefore.implantacaoStatus,
+      new_status: status,
+      municipio_id: municipioId,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function execucaoModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
-  await assertModuloOperacional(id);
-  const municipioId = str(fd, "municipioId");
+  const moduloBefore = await assertModuloOperacional(id);
+  const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
+  const municipioId = str(fd, "municipioId") ?? base?.municipioId;
   const data = str(fd, "execucaoInicio") ?? today();
   await db.update(baseModules).set({ execucaoInicio: data }).where(eq(baseModules.id, id));
   await logEvent({ tipo: "execucao_iniciada", descricao: "Cliente iniciou a utilização do módulo.", municipioId, baseModuleId: id, data });
+
+  auditClient.log({
+    category: "client",
+    action: "module.execution_started",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    details: {
+      execucao_inicio: data,
+      previous_inicio: moduloBefore.execucaoInicio,
+      municipio_id: municipioId,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function desabilitarModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
-  await assertModuloOperacional(id);
-  const municipioId = str(fd, "municipioId");
+  const moduloBefore = await assertModuloOperacional(id);
+  const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
+  const municipioId = str(fd, "municipioId") ?? base?.municipioId;
   const data = str(fd, "data") ?? today();
   const motivo = req(fd, "motivo");
   const justificativa = req(fd, "justificativa");
@@ -859,30 +1423,68 @@ export async function desabilitarModulo(fd: FormData) {
     baseModuleId: id,
     data,
   });
+
+  auditClient.log({
+    category: "client",
+    action: "module.disabled",
+    severity: "WARNING",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    details: {
+      motivo,
+      justificativa,
+      desabilitado_at: data,
+      municipio_id: municipioId,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function reabilitarModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const id = req(fd, "id");
-  await assertModuloOperacional(id);
-  const municipioId = str(fd, "municipioId");
+  const moduloBefore = await assertModuloOperacional(id);
+  const [base] = await db.select().from(bases).where(eq(bases.id, moduloBefore.baseId));
+  const municipioId = str(fd, "municipioId") ?? base?.municipioId;
   await db
     .update(baseModules)
     .set({ desabilitadoAt: null, desabilitadoMotivo: null, desabilitadoJustificativa: null })
     .where(eq(baseModules.id, id));
   await logEvent({ tipo: "reabilitado", descricao: "Módulo reabilitado (histórico de desabilitação preservado).", municipioId, baseModuleId: id });
+
+  auditClient.log({
+    category: "client",
+    action: "module.reactivated",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "module", id, label: `${moduloBefore.nome} - ${base?.nome ?? ""}` }],
+    details: {
+      municipio_id: municipioId,
+      previous_desabilitado_at: moduloBefore.desabilitadoAt,
+      previous_motivo: moduloBefore.desabilitadoMotivo,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
+
 /* ---------------- Contratos ---------------- */
 
 export async function createContrato(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const municipioId = req(fd, "municipioId");
   await assertClienteOperacional(municipioId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   const basesDoCliente = await db
     .select({ id: bases.id })
     .from(bases)
@@ -958,15 +1560,37 @@ export async function createContrato(fd: FormData) {
     throw error;
   });
   await logEvent({ tipo: "contrato_criado", descricao: `Contrato ${row.numero} criado.`, municipioId, contratoId: row.id });
+
+  auditClient.log({
+    category: "contract",
+    action: "contract.created",
+    severity: "INFO",
+    actor,
+    context,
+    targets: [{ type: "contract", id: row.id, label: `Contrato ${row.numero} (${cliente?.clienteNome ?? municipioId})` }],
+    details: {
+      numero: row.numero,
+      modalidade: row.modalidade,
+      processo: row.processo,
+      municipio_id: municipioId,
+      cliente_nome: cliente?.clienteNome,
+      linked_modules_count: baseModuleIds.length,
+      document_name: arquivo?.name ?? null,
+    },
+  });
+
   await syncPendencias();
   done();
 }
 
 export async function vincularModulo(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const contratoId = req(fd, "contratoId");
   const baseModuleId = req(fd, "baseModuleId");
   const c = await assertContratoOperacional(contratoId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, c.municipioId));
   const modulo = await assertModuloOperacional(baseModuleId);
   const base = await assertBaseOperacional(modulo.baseId);
   if (base.municipioId !== c.municipioId) {
@@ -982,13 +1606,35 @@ export async function vincularModulo(fd: FormData) {
     validateBaseAvailability([base.id], existingLinks, contratoId);
     return tx.insert(contratoModulos).values({ contratoId, baseModuleId }).onConflictDoNothing().returning();
   });
-  if (inserted.length > 0) await logEvent({ tipo: "modulo_vinculado", descricao: "Módulo vinculado ao contrato.", municipioId: c.municipioId, baseId: base.id, baseModuleId, contratoId });
+  if (inserted.length > 0) {
+    await logEvent({ tipo: "modulo_vinculado", descricao: "Módulo vinculado ao contrato.", municipioId: c.municipioId, baseId: base.id, baseModuleId, contratoId });
+
+    auditClient.log({
+      category: "contract",
+      action: "contract.module_linked",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "contract", id: contratoId, label: `Contrato ${c.numero} (${cliente?.clienteNome ?? c.municipioId})` }],
+      details: {
+        contrato_numero: c.numero,
+        base_id: base.id,
+        base_nome: base.nome,
+        base_module_id: baseModuleId,
+        module_name: modulo.nome,
+        municipio_id: c.municipioId,
+        cliente_nome: cliente?.clienteNome,
+      },
+    });
+  }
   await syncPendencias();
   done();
 }
 
 export async function desvincularBaseContrato(fd: FormData) {
   const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const contratoId = req(fd, "contratoId");
   const baseId = req(fd, "baseId");
   const motivo = req(fd, "motivo");
@@ -997,8 +1643,10 @@ export async function desvincularBaseContrato(fd: FormData) {
   }
   const observacoes = str(fd, "observacoes");
   const c = await assertContratoOperacional(contratoId);
+  const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, c.municipioId));
   const base = await assertBaseOperacional(baseId);
   if (base.municipioId !== c.municipioId) throw new Error("A base deve pertencer ao cliente deste contrato.");
+  let linkedCount = 0;
   await db.transaction(async (tx) => {
     await tx.select({ id: bases.id }).from(bases).where(eq(bases.id, baseId)).for("update");
     const linked = await tx
@@ -1007,6 +1655,7 @@ export async function desvincularBaseContrato(fd: FormData) {
       .innerJoin(baseModules, eq(baseModules.id, contratoModulos.baseModuleId))
       .where(and(eq(contratoModulos.contratoId, contratoId), eq(baseModules.baseId, baseId)));
     if (linked.length === 0) throw new Error("Esta base não está vinculada ao contrato.");
+    linkedCount = linked.length;
     await tx.delete(contratoModulos).where(and(
       eq(contratoModulos.contratoId, contratoId),
       inArray(contratoModulos.baseModuleId, linked.map((item) => item.baseModuleId)),
@@ -1021,6 +1670,26 @@ export async function desvincularBaseContrato(fd: FormData) {
       usuario: session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna",
     });
   });
+
+  auditClient.log({
+    category: "contract",
+    action: "contract.base_unlinked",
+    severity: "WARNING",
+    actor,
+    context,
+    targets: [{ type: "contract", id: contratoId, label: `Contrato ${c.numero} (${cliente?.clienteNome ?? c.municipioId})` }],
+    details: {
+      contrato_numero: c.numero,
+      base_id: baseId,
+      base_nome: base.nome,
+      motivo,
+      observacoes,
+      released_modules_count: linkedCount,
+      municipio_id: c.municipioId,
+      cliente_nome: cliente?.clienteNome,
+    },
+  });
+
   await syncPendencias();
   done();
 }
@@ -1028,7 +1697,9 @@ export async function desvincularBaseContrato(fd: FormData) {
 /* ---------------- Documentos ---------------- */
 
 export async function createDocumento(fd: FormData) {
-  await requireServerActionPermission();
+  const session = await requireServerActionPermission();
+  const context = await getActionRequestContext();
+  const actor = sessionToAuditActor(session);
   const municipioId = req(fd, "municipioId");
   await assertDocumentoContextoOperacional(fd, municipioId);
   const contratoId = str(fd, "contratoId");
@@ -1071,9 +1742,30 @@ export async function createDocumento(fd: FormData) {
     });
     inserted = true;
     await logEvent({ tipo: "documento_anexado", descricao: `Documento anexado: ${row.nome} (${row.tipo}).`, municipioId: row.municipioId, baseId: row.baseId, baseModuleId: row.baseModuleId, contratoId: row.contratoId });
+
+    auditClient.log({
+      category: "document",
+      action: "document.created",
+      severity: "INFO",
+      actor,
+      context,
+      targets: [{ type: "document", id: row.id, label: row.nome }],
+      details: {
+        tipo: row.tipo,
+        tamanho_bytes: row.tamanhoBytes,
+        mime_type: row.mimeType,
+        arquivo_nome_original: row.arquivoNomeOriginal,
+        municipio_id: row.municipioId,
+        contrato_id: row.contratoId,
+        base_id: row.baseId,
+        base_module_id: row.baseModuleId,
+        proposta_id: row.propostaId,
+      },
+    });
   } finally {
     if (!inserted) await deleteDocumentFile(uploaded.key).catch(() => undefined);
   }
   await syncPendencias();
   done();
 }
+
