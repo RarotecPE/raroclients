@@ -1563,7 +1563,7 @@ export async function createContrato(fd: FormData) {
   await assertClienteOperacional(municipioId);
   const [cliente] = await db.select({ clienteNome: municipios.clienteNome }).from(municipios).where(eq(municipios.id, municipioId));
   const basesDoCliente = await db
-    .select({ id: bases.id })
+    .select({ id: bases.id, nome: bases.nome })
     .from(bases)
     .where(and(eq(bases.municipioId, municipioId), eq(bases.situacao, "ativa")));
   if (basesDoCliente.length === 0) {
