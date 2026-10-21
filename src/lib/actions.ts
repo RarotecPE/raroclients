@@ -1661,6 +1661,7 @@ export async function createContrato(fd: FormData) {
           base_nome: base?.nome ?? null,
         };
       }),
+      hasAttachment: Boolean(arquivo),
       document_name: arquivo?.name ?? null,
     },
   });

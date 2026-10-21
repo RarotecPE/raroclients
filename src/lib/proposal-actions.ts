@@ -558,6 +558,7 @@ export async function uploadPropostaDocumento(fd: FormData) {
       details: {
         versao: version,
         documento_id: documentId,
+        hasAttachment: true,
         arquivo_nome: uploaded.originalName,
         tamanho_bytes: uploaded.size,
         mime_type: uploaded.contentType,
