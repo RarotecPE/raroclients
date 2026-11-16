@@ -6,6 +6,7 @@ import { DialogForm, SubmitButton } from "@/components/dialog";
 import { Field, btnGhost, btnPrimary, inputCls, selectCls, textareaCls } from "@/components/ui";
 import { BASE_TIPOS } from "@/lib/constants";
 import { cnpjDigits, formatCnpj } from "@/lib/cnpj";
+import { generateClientKey } from "@/lib/utils";
 
 interface BaseOption {
   id: string;
@@ -24,7 +25,7 @@ interface EditableBase {
 }
 
 type ChildDraft = { key: string; nome: string; tipo: string; cnpj: string; observacoes: string };
-const emptyChildDraft = (): ChildDraft => ({ key: crypto.randomUUID(), nome: "", tipo: BASE_TIPOS[0], cnpj: "", observacoes: "" });
+const emptyChildDraft = (): ChildDraft => ({ key: generateClientKey(), nome: "", tipo: BASE_TIPOS[0], cnpj: "", observacoes: "" });
 
 interface BaseFormFieldsProps {
   action: (fd: FormData) => void | Promise<void>;

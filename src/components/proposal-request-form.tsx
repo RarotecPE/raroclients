@@ -7,7 +7,7 @@ import { Field, btnGhost, btnPrimary, inputCls, selectCls, textareaCls } from "@
 import { BASE_TIPOS, MODULE_CATALOG } from "@/lib/constants";
 import { atualizarProposta, createProposta } from "@/lib/proposal-actions";
 import { hasProposalBaseType, proposalClientsByIbge } from "@/lib/proposal";
-import { cn, norm } from "@/lib/utils";
+import { cn, generateClientKey, norm } from "@/lib/utils";
 
 type ClientOption = { id: string; nome: string; municipio: string; uf: string; codigoIbge: string | null; situacao: string };
 type BaseOption = { id: string; municipioId: string; nome: string; tipo: string };
@@ -28,7 +28,7 @@ export type ProposalFormInitialData = {
 };
 
 const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
-const newDraftBase = (): DraftBase => ({ key: crypto.randomUUID(), nome: "", tipo: "Prefeitura", modulos: [], forcarCriacaoDuplicada: false });
+const newDraftBase = (): DraftBase => ({ key: generateClientKey(), nome: "", tipo: "Prefeitura", modulos: [], forcarCriacaoDuplicada: false });
 const selectionKey = (baseId: string, moduleName: string) => `${baseId}:${norm(moduleName)}`;
 
 function ModuleBadgeSelector({ selected, onChange, modules = [], contractedModuleIds = new Set<string>() }: {
