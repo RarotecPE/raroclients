@@ -28,6 +28,29 @@ type HeaderApplication = {
   homepage_url: string;
 };
 
+function resolveApplicationLaunchUrl(application: { client_id: string; homepage_url: string }): string {
+  if (!application.homepage_url) return "#";
+  if (application.client_id === "raronexus") {
+    try {
+      return new URL("/home", application.homepage_url).toString();
+    } catch {
+      return application.homepage_url;
+    }
+  }
+
+  try {
+    const raw = new URL(application.homepage_url);
+    const startUrl = new URL("/api/auth/raronexus/start", raw.origin);
+    const nextPath = raw.pathname && raw.pathname !== "/"
+      ? raw.pathname
+      : (application.client_id.startsWith("rarotickets") ? "/painel" : "/dashboard");
+    startUrl.searchParams.set("next", nextPath);
+    return startUrl.toString();
+  } catch {
+    return application.homepage_url;
+  }
+}
+
 function nexusHomeApplication(request: NextRequest, nexusBaseUrl: string): HeaderApplication {
   return {
     nome: "RaroNexus",
@@ -83,12 +106,16 @@ export async function GET(request: NextRequest) {
       const homepageUrl = application.homepage_url ?? application.homepageUrl;
       return application.ativo !== false && clientId !== config.clientId && Boolean(homepageUrl);
     })
-    .map<HeaderApplication>((application) => ({
-      nome: application.nome ?? "Aplicativo",
-      client_id: application.client_id ?? application.clientId ?? "application",
-      logo_url: application.logo_url ?? application.logoUrl ?? null,
-      homepage_url: application.homepage_url ?? application.homepageUrl ?? "",
-    }));
+    .map<HeaderApplication>((application) => {
+      const clientId = application.client_id ?? application.clientId ?? "application";
+      const rawHomepage = application.homepage_url ?? application.homepageUrl ?? "";
+      return {
+        nome: application.nome ?? "Aplicativo",
+        client_id: clientId,
+        logo_url: application.logo_url ?? application.logoUrl ?? null,
+        homepage_url: resolveApplicationLaunchUrl({ client_id: clientId, homepage_url: rawHomepage }),
+      };
+    });
 
   if (config.clientId !== "raronexus" && !applications.some((item) => item.client_id === "raronexus")) {
     applications.unshift(nexusHomeApplication(request, config.raronexusBaseUrl));
