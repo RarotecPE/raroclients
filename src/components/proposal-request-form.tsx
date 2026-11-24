@@ -27,7 +27,12 @@ export type ProposalFormInitialData = {
   items: { id: string; baseId: string | null; nome: string; tipo: string | null; forcarCriacaoDuplicada: boolean; modulos: { baseModuleId: string | null; nome: string }[] }[];
 };
 
-const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
+type UfOption = { sigla: string; nome: string };
+
+const FALLBACK_UFS: UfOption[] = [
+  "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG",
+  "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO",
+].map((sigla) => ({ sigla, nome: sigla }));
 const newDraftBase = (): DraftBase => ({ key: generateClientKey(), nome: "", tipo: "Prefeitura", modulos: [], forcarCriacaoDuplicada: false });
 const selectionKey = (baseId: string, moduleName: string) => `${baseId}:${norm(moduleName)}`;
 
@@ -108,8 +113,9 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
   const [selectedModules, setSelectedModules] = useState<Set<string>>(() => new Set(initialData?.items.flatMap((item) => item.baseId ? item.modulos.map((module) => selectionKey(item.baseId!, module.nome)) : []) ?? []));
   const [consultModuleId, setConsultModuleId] = useState(initialData?.tipo === "consultoria" ? initialData.items[0]?.modulos[0]?.baseModuleId ?? "" : "");
   const [draftBases, setDraftBases] = useState<DraftBase[]>(() => initialData?.items.filter((item) => !item.baseId).map((item) => ({ key: item.id, nome: item.nome, tipo: item.tipo ?? "Outros", modulos: item.modulos.map((module) => module.nome), forcarCriacaoDuplicada: item.forcarCriacaoDuplicada })) ?? []);
+  const [ufs, setUfs] = useState<UfOption[]>(FALLBACK_UFS);
   const [uf, setUf] = useState(initialData?.uf ?? "PE");
-  const [ibgeCities, setIbgeCities] = useState<{ id: string; nome: string }[]>([]);
+  const [municipiosUf, setMunicipiosUf] = useState<{ id: string; nome: string }[]>([]);
   const [codigoIbge, setCodigoIbge] = useState(initialData?.codigoIbge ?? "");
   const [confirmedExistingCity, setConfirmedExistingCity] = useState(false);
 
@@ -126,14 +132,36 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
   const existingCityClientIds = useMemo(() => new Set(existingCityClients.map((client) => client.id)), [existingCityClients]);
   const existingCityBases = useMemo(() => bases.filter((base) => existingCityClientIds.has(base.municipioId)), [bases, existingCityClientIds]);
   const duplicateReferenceBases = origem === "cadastrado" ? clientBases : existingCityBases;
-  const selectedCity = ibgeCities.find((city) => city.id === codigoIbge);
+  const selectedCity = municipiosUf.find((city) => city.id === codigoIbge);
 
   useEffect(() => {
     if (origem !== "avulso" || tipo !== "implantacao_sistema") return;
-    fetch(`/api/ibge/municipios?uf=${encodeURIComponent(uf)}`)
+    let active = true;
+    fetch("/api/raronexus/ufs")
       .then((response) => response.json())
-      .then((payload: { ok: boolean; data: { id: string; nome: string }[] }) => setIbgeCities(payload.ok ? payload.data : []))
-      .catch(() => setIbgeCities([]));
+      .then((payload: { ok: boolean; data: UfOption[] }) => {
+        if (active && payload.ok && payload.data.length > 0) setUfs(payload.data);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [origem, tipo]);
+
+  useEffect(() => {
+    if (origem !== "avulso" || tipo !== "implantacao_sistema") return;
+    let active = true;
+    fetch(`/api/raronexus/municipios?uf=${encodeURIComponent(uf)}`)
+      .then((response) => response.json())
+      .then((payload: { ok: boolean; data: { id: string; nome: string }[] }) => {
+        if (active) setMunicipiosUf(payload.ok ? payload.data : []);
+      })
+      .catch(() => {
+        if (active) setMunicipiosUf([]);
+      });
+    return () => {
+      active = false;
+    };
   }, [origem, tipo, uf]);
 
   const registeredItems = clientBases.filter((base) => selectedBases.has(base.id)).map((base) => {
@@ -236,7 +264,7 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
           <p className="text-xs text-app-muted-foreground"><CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-app-success" />Badges verdes indicam módulos já contratados; eles ainda podem ser selecionados.</p>
         </> : null}</div>}
       </div> : <div className="mt-4 space-y-4">
-        {initialData ? <Field label="Cliente"><div className="rounded-app-md border border-app-border bg-app-surface-elevated/40 px-3 py-2.5"><p className="text-sm font-semibold text-app-foreground">{initialData.clienteNomeSnapshot}</p><p className="text-xs text-app-muted-foreground">{initialData.municipioNome}/{initialData.uf}{initialData.codigoIbge ? ` · IBGE ${initialData.codigoIbge}` : ""} · cliente original da proposta</p></div></Field> : <><div className="grid gap-4 sm:grid-cols-3"><Field label="Nome do cliente"><input name="clienteNomeSnapshot" required className={inputCls} placeholder="Ex.: Prefeitura Municipal" /></Field><Field label="UF"><select name="uf" value={uf} onChange={(event) => { setUf(event.target.value); setCodigoIbge(""); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}>{UFS.map((value) => <option key={value}>{value}</option>)}</select></Field><Field label="Município"><select required value={codigoIbge} onChange={(event) => { setCodigoIbge(event.target.value); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}><option value="" disabled>Selecione...</option>{ibgeCities.map((city) => <option key={city.id} value={city.id}>{city.nome}</option>)}</select></Field></div><input type="hidden" name="codigoIbge" value={codigoIbge} /><input type="hidden" name="municipioNome" value={selectedCity?.nome ?? ""} /></>}
+        {initialData ? <Field label="Cliente"><div className="rounded-app-md border border-app-border bg-app-surface-elevated/40 px-3 py-2.5"><p className="text-sm font-semibold text-app-foreground">{initialData.clienteNomeSnapshot}</p><p className="text-xs text-app-muted-foreground">{initialData.municipioNome}/{initialData.uf}{initialData.codigoIbge ? ` · IBGE ${initialData.codigoIbge}` : ""} · cliente original da proposta</p></div></Field> : <><div className="grid gap-4 sm:grid-cols-3"><Field label="Nome do cliente"><input name="clienteNomeSnapshot" required className={inputCls} placeholder="Ex.: Prefeitura Municipal" /></Field><Field label="UF"><select name="uf" value={uf} onChange={(event) => { setUf(event.target.value); setCodigoIbge(""); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}>{ufs.map((item) => <option key={item.sigla} value={item.sigla}>{item.nome !== item.sigla ? `${item.sigla} - ${item.nome}` : item.sigla}</option>)}</select></Field><Field label="Município"><select required value={codigoIbge} onChange={(event) => { setCodigoIbge(event.target.value); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}><option value="" disabled>Selecione...</option>{municipiosUf.map((city) => <option key={city.id} value={city.id}>{city.nome}</option>)}</select></Field></div><input type="hidden" name="codigoIbge" value={codigoIbge} /><input type="hidden" name="municipioNome" value={selectedCity?.nome ?? ""} /></>}
         {existingCityClients.length > 0 ? <div className="flex gap-2 rounded-app-md border border-app-warning/40 bg-app-warning/10 p-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-app-warning" aria-hidden="true" />
           <div className="space-y-3 text-sm">

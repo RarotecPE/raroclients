@@ -9,7 +9,6 @@ import { findDuplicateMunicipalityClients } from "@/lib/client-municipality";
 import { MUNICIPIO_SITUACOES, optLabel } from "@/lib/constants";
 
 interface UfOption {
-  id: number;
   sigla: string;
   nome: string;
 }
@@ -38,7 +37,7 @@ interface ExistingClient {
 const FALLBACK_UFS: UfOption[] = [
   "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG",
   "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO",
-].map((sigla) => ({ id: 0, sigla, nome: sigla }));
+].map((sigla) => ({ sigla, nome: sigla }));
 
 export function ClienteForm({
   trigger,
@@ -67,7 +66,7 @@ export function ClienteForm({
   const [populacao, setPopulacao] = useState(cliente?.populacao?.toString() ?? "");
   const [loadingMunicipios, setLoadingMunicipios] = useState(false);
   const [loadingDetalhe, setLoadingDetalhe] = useState(false);
-  const [ibgeError, setIbgeError] = useState<string | null>(null);
+  const [localidadesError, setLocalidadesError] = useState<string | null>(null);
   const [confirmedDuplicate, setConfirmedDuplicate] = useState(false);
 
   const municipioOptions = useMemo(() => {
@@ -82,7 +81,7 @@ export function ClienteForm({
   useEffect(() => {
     let active = true;
 
-    fetch("/api/ibge/ufs")
+    fetch("/api/raronexus/ufs")
       .then((response) => response.json())
       .then((payload: { ok: boolean; data: UfOption[] }) => {
         if (active && payload.ok && payload.data.length > 0) setUfs(payload.data);
@@ -102,9 +101,9 @@ export function ClienteForm({
       if (!active) return;
 
       setLoadingMunicipios(true);
-      setIbgeError(null);
+      setLocalidadesError(null);
 
-      fetch(`/api/ibge/municipios?uf=${encodeURIComponent(uf)}`)
+      fetch(`/api/raronexus/municipios?uf=${encodeURIComponent(uf)}`)
         .then((response) => response.json())
         .then((payload: { ok: boolean; data: MunicipioOption[] }) => {
           if (!active) return;
@@ -113,12 +112,12 @@ export function ClienteForm({
             return;
           }
           setMunicipios([]);
-          setIbgeError("Nao foi possivel carregar os municipios do IBGE.");
+          setLocalidadesError("Nao foi possivel carregar os municipios.");
         })
         .catch(() => {
           if (active) {
             setMunicipios([]);
-            setIbgeError("Nao foi possivel carregar os municipios do IBGE.");
+            setLocalidadesError("Nao foi possivel carregar os municipios.");
           }
         })
         .finally(() => {
@@ -145,19 +144,19 @@ export function ClienteForm({
     }
 
     setLoadingDetalhe(true);
-    setIbgeError(null);
-    fetch(`/api/ibge/municipios/${encodeURIComponent(nextCodigoIbge)}`)
+    setLocalidadesError(null);
+    fetch(`/api/raronexus/municipios/${encodeURIComponent(nextCodigoIbge)}`)
       .then((response) => response.json())
       .then((payload: { ok: boolean; data?: MunicipioDetalhe }) => {
         if (!payload.ok || !payload.data) {
-          setIbgeError("Nao foi possivel carregar os dados do municipio.");
+          setLocalidadesError("Nao foi possivel carregar os dados do municipio.");
           return;
         }
         setMunicipioNome(payload.data.nome);
         setUf(payload.data.uf || uf);
         setPopulacao(payload.data.populacao?.toString() ?? "");
       })
-      .catch(() => setIbgeError("Nao foi possivel carregar os dados do municipio."))
+      .catch(() => setLocalidadesError("Nao foi possivel carregar os dados do municipio."))
       .finally(() => setLoadingDetalhe(false));
   }
 
@@ -194,7 +193,7 @@ export function ClienteForm({
               }}
             >
               {ufs.map((item) => (
-                <option key={`${item.sigla}-${item.id}`} value={item.sigla}>
+                <option key={item.sigla} value={item.sigla}>
                   {item.sigla} - {item.nome}
                 </option>
               ))}
@@ -253,7 +252,7 @@ export function ClienteForm({
           </div>
         </div> : null}
         {confirmedDuplicate ? <input type="hidden" name="confirmarMunicipioDuplicado" value="sim" /> : null}
-        {ibgeError ? <p className="text-xs font-medium text-app-warning">{ibgeError}</p> : null}
+        {localidadesError ? <p className="text-xs font-medium text-app-warning">{localidadesError}</p> : null}
         <Field label="Dados administrativos">
           <textarea name="dadosAdministrativos" rows={2} defaultValue={cliente?.dadosAdministrativos ?? ""} className={textareaCls} placeholder="Prefeito(a), contatos, gestao vigente..." />
         </Field>
