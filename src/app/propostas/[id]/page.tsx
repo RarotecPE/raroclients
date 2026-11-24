@@ -3,7 +3,7 @@ import Link from "next/link";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { db } from "@/db";
-import { documentos, propostaBases, propostaEspecificidades, propostaHistorico, propostaModulos, propostas } from "@/db/schema";
+import { documentos, municipios, propostaBases, propostaEspecificidades, propostaHistorico, propostaModulos, propostas } from "@/db/schema";
 import { DialogForm, SubmitButton } from "@/components/dialog";
 import { FileInput } from "@/components/file-input";
 import { DocumentShareButton } from "@/components/document-share-button";
@@ -15,7 +15,7 @@ import { enviarProposta, materializarCadastrosProposta, uploadPropostaDocumento 
 import { getCurrentSession } from "@/lib/auth";
 import { optLabel, optTone } from "@/lib/constants";
 import { isDocumentViewable } from "@/lib/document-view";
-import { propostaHistoricoAcaoLabel, propostaStatusLabel } from "@/lib/proposal";
+import { formatProposalPopulation, propostaHistoricoAcaoLabel, propostaStatusLabel } from "@/lib/proposal";
 import { formatDate, formatDateTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +36,11 @@ export default async function PropostaDetailPage({ params }: { params: Promise<{
   const isAuthor = Boolean(proposal.solicitadoPorId && proposal.solicitadoPorId === session?.user?.id);
   if (!isGestor && !isAuthor) notFound();
 
+  const [linkedClient] = proposal.municipioId && proposal.populacao === null
+    ? await db.select({ populacao: municipios.populacao }).from(municipios).where(eq(municipios.id, proposal.municipioId))
+    : [];
+  const populacao = proposal.populacao ?? linkedClient?.populacao ?? null;
+
   const hasPendingRecords = proposalBaseRows.some((base) => !base.baseId) || proposalModuleRows.some((row) => !row.proposta_modulos.baseModuleId);
   const needsMaterialization = !proposal.municipioId || hasPendingRecords;
   const canEdit = isGestor
@@ -44,7 +49,7 @@ export default async function PropostaDetailPage({ params }: { params: Promise<{
   const canCancel = isGestor || isAuthor;
 
   return <div className="flex flex-col gap-5">
-    <Panel className="p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><Link href="/propostas" className="mb-3 inline-flex items-center gap-1 text-xs text-app-muted-foreground hover:text-app-primary"><ArrowLeft className="h-3.5 w-3.5" /> Central de propostas</Link><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold text-app-foreground">{proposal.clienteNomeSnapshot}</h2><Badge tone={optTone(proposal.situacao)}>{optLabel(proposal.situacao)}</Badge><Badge tone={optTone(proposal.tipo)}>{optLabel(proposal.tipo)}</Badge></div><p className="mt-1 text-sm text-app-muted-foreground">{proposal.municipioNome}/{proposal.uf} · Solicitada em {formatDate(proposal.data)}{proposal.solicitadoPorNome ? ` por ${proposal.solicitadoPorNome}` : ""}</p></div><div className="flex flex-wrap gap-2">{canEdit ? <Link href={`/propostas/${id}/editar`} className={btnGhost}><Pencil className="h-4 w-4" /> Editar proposta</Link> : null}{canCancel && proposal.situacao === "solicitada" ? <ProposalCancelDialog id={id} /> : null}{isGestor && proposal.situacao === "cancelada" ? <ProposalDeleteDialog id={id} /> : null}</div></div></Panel>
+    <Panel className="p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><Link href="/propostas" className="mb-3 inline-flex items-center gap-1 text-xs text-app-muted-foreground hover:text-app-primary"><ArrowLeft className="h-3.5 w-3.5" /> Central de propostas</Link><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold text-app-foreground">{proposal.clienteNomeSnapshot}</h2><Badge tone={optTone(proposal.situacao)}>{optLabel(proposal.situacao)}</Badge><Badge tone={optTone(proposal.tipo)}>{optLabel(proposal.tipo)}</Badge></div><p className="mt-1 text-sm text-app-muted-foreground">{proposal.municipioNome}/{proposal.uf} · População estimada: {formatProposalPopulation(populacao)} · Solicitada em {formatDate(proposal.data)}{proposal.solicitadoPorNome ? ` por ${proposal.solicitadoPorNome}` : ""}</p></div><div className="flex flex-wrap gap-2">{canEdit ? <Link href={`/propostas/${id}/editar`} className={btnGhost}><Pencil className="h-4 w-4" /> Editar proposta</Link> : null}{canCancel && proposal.situacao === "solicitada" ? <ProposalCancelDialog id={id} /> : null}{isGestor && proposal.situacao === "cancelada" ? <ProposalDeleteDialog id={id} /> : null}</div></div></Panel>
 
     {proposal.situacao === "cancelada" ? <Panel className="border-app-danger/40"><PanelHeader title="Proposta cancelada" description="Esta proposta não pode mais ser editada ou processada" /><div className="space-y-1 p-4 text-sm"><p className="text-app-foreground"><span className="font-semibold">Motivo:</span> {proposal.cancelamentoMotivo}</p><p className="text-xs text-app-muted-foreground">Cancelada em {formatDateTime(proposal.canceladaAt)} por {proposal.canceladaPor ?? "Equipe Interna"}.</p></div></Panel> : null}
 

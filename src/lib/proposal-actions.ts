@@ -21,7 +21,7 @@ import { canView } from "@/lib/auth-permissions";
 import { syncPendencias } from "@/lib/domain";
 import { deleteDocumentFile, fileFromFormData, getDocumentFile, MAX_DOCUMENT_SIZE_BYTES, uploadDocumentFile } from "@/lib/document-storage";
 import { isValidEmail } from "@/lib/module-enabled-email";
-import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, PROPOSTA_ESPECIFICIDADES, PROPOSTA_MODALIDADES, requireProposalCancellationReason, selectProposalClientCandidate, type ProposalImmutableIdentity, type PropostaStatus } from "@/lib/proposal";
+import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, parseProposalPopulation, PROPOSTA_ESPECIFICIDADES, PROPOSTA_MODALIDADES, requireProposalCancellationReason, selectProposalClientCandidate, type ProposalImmutableIdentity, type PropostaStatus } from "@/lib/proposal";
 import { sendProposalEmail } from "@/lib/proposal-email";
 import { norm } from "@/lib/utils";
 
@@ -63,6 +63,7 @@ type ValidatedProposalInput = {
   municipioNome: string;
   uf: string;
   codigoIbge: string | null;
+  populacao: number | null;
   atividadeConjunta: boolean | null;
   items: ProposalItemInput[];
   especificidades: string[];
@@ -98,7 +99,10 @@ function parseItems(raw: string): ProposalItemInput[] {
   return items;
 }
 
-async function validateProposalForm(fd: FormData, lockedIdentity?: ProposalImmutableIdentity): Promise<ValidatedProposalInput> {
+async function validateProposalForm(
+  fd: FormData,
+  lockedIdentity?: ProposalImmutableIdentity & { populacao?: number | null },
+): Promise<ValidatedProposalInput> {
   const submittedTipo = required(fd, "tipo");
   if (!PROPOSTA_MODALIDADES.includes(submittedTipo as (typeof PROPOSTA_MODALIDADES)[number])) throw new Error("Modalidade de proposta inválida.");
   if (lockedIdentity) {
@@ -121,6 +125,9 @@ async function validateProposalForm(fd: FormData, lockedIdentity?: ProposalImmut
   const municipioNome = lockedIdentity?.municipioNome ?? cliente?.municipio ?? required(fd, "municipioNome");
   const uf = lockedIdentity?.uf ?? cliente?.uf ?? required(fd, "uf").toUpperCase().slice(0, 2);
   const codigoIbge = lockedIdentity ? lockedIdentity.codigoIbge : cliente?.codigoIbge ?? text(fd, "codigoIbge");
+  const populacao = cliente
+    ? (lockedIdentity ? (lockedIdentity.populacao ?? cliente.populacao ?? null) : (cliente.populacao ?? null))
+    : parseProposalPopulation(fd.get("populacao"));
   let atividadeConjunta: boolean | null = null;
   let items: ProposalItemInput[];
   let especificidades: string[] = [];
@@ -225,6 +232,7 @@ async function validateProposalForm(fd: FormData, lockedIdentity?: ProposalImmut
     municipioNome,
     uf,
     codigoIbge,
+    populacao,
     atividadeConjunta,
     items,
     especificidades,
@@ -261,6 +269,7 @@ export async function createProposta(fd: FormData) {
       municipioNome: input.municipioNome,
       uf: input.uf,
       codigoIbge: input.codigoIbge,
+      populacao: input.populacao,
       atividadeConjunta: input.atividadeConjunta,
       solicitadoPorId: session.user.id,
       solicitadoPorNome: session.user.nome,
@@ -292,6 +301,7 @@ export async function atualizarProposta(fd: FormData) {
     const currentIsAuthor = Boolean(proposal.solicitadoPorId && proposal.solicitadoPorId === session.user.id);
     assertProposalEditAllowed(proposal.situacao, isGestor, currentIsAuthor);
     await tx.update(propostas).set({
+      populacao: input.populacao,
       atividadeConjunta: input.atividadeConjunta,
       observacoes: input.observacoes,
     }).where(eq(propostas.id, id));
@@ -525,6 +535,7 @@ async function materializeAcceptedProposal(id: string, usuario: string) {
           municipio: proposal.municipioNome,
           uf: proposal.uf,
           codigoIbge: proposal.codigoIbge,
+          populacao: proposal.populacao,
           situacao: "em_negociacao",
           observacoes: `Cliente criado automaticamente a partir da proposta aceita ${proposal.id}.`,
         }).returning();

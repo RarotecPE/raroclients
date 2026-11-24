@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, hideProposalIds, parseProposalOriginNote, propostaHistoricoAcaoLabel, proposalClientsByIbge, requireProposalCancellationReason, selectProposalClientCandidate } from "./proposal";
+import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, formatProposalPopulation, hasProposalBaseType, hideProposalIds, parseProposalOriginNote, parseProposalPopulation, propostaHistoricoAcaoLabel, proposalClientsByIbge, requireProposalCancellationReason, selectProposalClientCandidate } from "./proposal";
 
 test("aceita somente transições orientadas pelas ações da proposta", () => {
   assert.doesNotThrow(() => assertPropostaTransition("solicitada", "gerada"));
@@ -156,4 +156,23 @@ test("permite cancelamento de proposta conforme o perfil e status", () => {
   assert.throws(() => assertProposalCancelAllowed("gerada", false, true), /status solicitada/);
   assert.throws(() => assertProposalCancelAllowed("gerada", true, false), /status solicitada/);
   assert.throws(() => assertProposalCancelAllowed("enviada", true, false), /status solicitada/);
+});
+
+test("valida e normaliza a população estimada da proposta", () => {
+  assert.equal(parseProposalPopulation(null), null);
+  assert.equal(parseProposalPopulation(undefined), null);
+  assert.equal(parseProposalPopulation("   "), null);
+  assert.equal(parseProposalPopulation("0"), 0);
+  assert.equal(parseProposalPopulation(" 24151 "), 24151);
+  assert.throws(() => parseProposalPopulation("-10"), /população estimada válida/);
+  assert.throws(() => parseProposalPopulation("12.5"), /população estimada válida/);
+  assert.throws(() => parseProposalPopulation("abc"), /população estimada válida/);
+  assert.throws(() => parseProposalPopulation("999999999999"), /população estimada válida/);
+});
+
+test("formata a população estimada da proposta para exibição", () => {
+  assert.equal(formatProposalPopulation(86241), `${(86241).toLocaleString("pt-BR")} hab.`);
+  assert.equal(formatProposalPopulation(0), "0 hab.");
+  assert.equal(formatProposalPopulation(null), "não informada");
+  assert.equal(formatProposalPopulation(undefined), "não informada");
 });

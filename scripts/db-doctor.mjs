@@ -60,7 +60,7 @@ const expectedClienteColumns = [
 
 const expectedPropostaColumns = [
   "id", "municipio_id", "tipo", "data", "situacao", "cliente_nome_snapshot",
-  "municipio_nome", "uf", "codigo_ibge", "atividade_conjunta", "gerada_at",
+  "municipio_nome", "uf", "codigo_ibge", "populacao", "atividade_conjunta", "gerada_at",
   "enviada_at", "decisao_at", "cancelada_at", "cancelada_por", "cancelamento_motivo",
   "excluida_at", "excluida_por", "bases_envolvidas", "modulos_envolvidos",
   "observacoes", "created_at",

@@ -43,6 +43,7 @@ export default async function EditarPropostaPage({ params }: { params: Promise<{
     municipioNome: proposal.municipioNome,
     uf: proposal.uf,
     codigoIbge: proposal.codigoIbge,
+    populacao: proposal.populacao,
     atividadeConjunta: proposal.atividadeConjunta,
     observacoes: proposal.observacoes,
     especificidades: especificidades.map((item) => item.especificidade),

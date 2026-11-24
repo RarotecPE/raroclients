@@ -94,6 +94,7 @@ const EXPECTED_ADITIVO_COLUMNS = [
 const EXPECTED_BASE_COLUMNS = ["base_superior_id"] as const;
 const EXPECTED_PROPOSTA_BASE_COLUMNS = ["forcar_criacao_duplicada"] as const;
 const EXPECTED_PROPOSTA_COLUMNS = [
+  "populacao",
   "cancelada_at",
   "cancelada_por",
   "cancelamento_motivo",

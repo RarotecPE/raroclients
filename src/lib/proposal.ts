@@ -166,3 +166,21 @@ export function parseProposalOriginNote(value: string) {
 export function hideProposalIds(value: string) {
   return value.replace(new RegExp(`(\\bproposta(?:\\s+aceita)?)\\s+${PROPOSAL_UUID_SOURCE}(?=[\\s.,;:!?]|$)`, "gi"), "$1");
 }
+
+export function parseProposalPopulation(value: FormDataEntryValue | string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) throw new Error("Informe uma população estimada válida.");
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) {
+    throw new Error("Informe uma população estimada válida.");
+  }
+  return parsed;
+}
+
+export function formatProposalPopulation(populacao: number | null | undefined): string {
+  return populacao !== null && populacao !== undefined
+    ? `${populacao.toLocaleString("pt-BR")} hab.`
+    : "não informada";
+}

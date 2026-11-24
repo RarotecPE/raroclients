@@ -111,6 +111,7 @@ export const propostas = pgTable("propostas", {
   municipioNome: text("municipio_nome").notNull(),
   uf: text("uf").notNull(),
   codigoIbge: text("codigo_ibge"),
+  populacao: integer("populacao"),
   atividadeConjunta: boolean("atividade_conjunta"),
   solicitadoPorId: text("solicitado_por_id"),
   solicitadoPorNome: text("solicitado_por_nome"),

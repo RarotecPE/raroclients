@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { SubmitButton } from "@/components/dialog";
 import { Field, btnGhost, btnPrimary, inputCls, selectCls, textareaCls } from "@/components/ui";
 import { BASE_TIPOS, MODULE_CATALOG } from "@/lib/constants";
@@ -21,6 +21,7 @@ export type ProposalFormInitialData = {
   municipioNome: string;
   uf: string;
   codigoIbge: string | null;
+  populacao: number | null;
   atividadeConjunta: boolean | null;
   observacoes: string | null;
   especificidades: string[];
@@ -28,6 +29,7 @@ export type ProposalFormInitialData = {
 };
 
 type UfOption = { sigla: string; nome: string };
+type MunicipioDetalhe = { id: string; nome: string; uf: string; populacao: number | null };
 
 const FALLBACK_UFS: UfOption[] = [
   "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG",
@@ -117,7 +119,13 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
   const [uf, setUf] = useState(initialData?.uf ?? "PE");
   const [municipiosUf, setMunicipiosUf] = useState<{ id: string; nome: string }[]>([]);
   const [codigoIbge, setCodigoIbge] = useState(initialData?.codigoIbge ?? "");
+  const [municipioNome, setMunicipioNome] = useState(initialData?.municipioNome ?? "");
+  const [populacao, setPopulacao] = useState(initialData?.populacao?.toString() ?? "");
+  const [loadingMunicipios, setLoadingMunicipios] = useState(false);
+  const [loadingDetalhe, setLoadingDetalhe] = useState(false);
+  const [localidadesError, setLocalidadesError] = useState<string | null>(null);
   const [confirmedExistingCity, setConfirmedExistingCity] = useState(false);
+  const detalheRequestRef = useRef(0);
 
   const contractedSet = useMemo(() => new Set(contractedModuleIds), [contractedModuleIds]);
   const availableClients = useMemo(() => clientes.filter((client) => client.situacao !== "cliente_encerrado"), [clientes]);
@@ -151,18 +159,80 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
   useEffect(() => {
     if (origem !== "avulso" || tipo !== "implantacao_sistema") return;
     let active = true;
-    fetch(`/api/raronexus/municipios?uf=${encodeURIComponent(uf)}`)
-      .then((response) => response.json())
-      .then((payload: { ok: boolean; data: { id: string; nome: string }[] }) => {
-        if (active) setMunicipiosUf(payload.ok ? payload.data : []);
-      })
-      .catch(() => {
-        if (active) setMunicipiosUf([]);
-      });
+
+    async function loadMunicipios() {
+      await Promise.resolve();
+      if (!active) return;
+
+      setLoadingMunicipios(true);
+      setLocalidadesError(null);
+
+      fetch(`/api/raronexus/municipios?uf=${encodeURIComponent(uf)}`)
+        .then((response) => response.json())
+        .then((payload: { ok: boolean; data: { id: string; nome: string }[] }) => {
+          if (!active) return;
+          if (payload.ok) {
+            setMunicipiosUf(payload.data);
+            return;
+          }
+          setMunicipiosUf([]);
+          setLocalidadesError("Não foi possível carregar os municípios.");
+        })
+        .catch(() => {
+          if (active) {
+            setMunicipiosUf([]);
+            setLocalidadesError("Não foi possível carregar os municípios.");
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingMunicipios(false);
+        });
+    }
+
+    loadMunicipios();
+
     return () => {
       active = false;
     };
   }, [origem, tipo, uf]);
+
+  function loadMunicipioDetalhe(nextCodigoIbge: string) {
+    const requestId = ++detalheRequestRef.current;
+    setCodigoIbge(nextCodigoIbge);
+    setConfirmedExistingCity(false);
+    setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false })));
+    const option = municipiosUf.find((city) => city.id === nextCodigoIbge);
+    setMunicipioNome(option?.nome ?? "");
+    if (!nextCodigoIbge) {
+      setPopulacao("");
+      setLoadingDetalhe(false);
+      setLocalidadesError(null);
+      return;
+    }
+
+    setLoadingDetalhe(true);
+    setLocalidadesError(null);
+    fetch(`/api/raronexus/municipios/${encodeURIComponent(nextCodigoIbge)}`)
+      .then((response) => response.json())
+      .then((payload: { ok: boolean; data?: MunicipioDetalhe }) => {
+        if (detalheRequestRef.current !== requestId) return;
+        if (!payload.ok || !payload.data) {
+          setLocalidadesError("Não foi possível carregar os dados do município.");
+          return;
+        }
+        setMunicipioNome(payload.data.nome);
+        if (payload.data.uf && payload.data.uf !== uf) setUf(payload.data.uf);
+        setPopulacao(payload.data.populacao?.toString() ?? "");
+      })
+      .catch(() => {
+        if (detalheRequestRef.current === requestId) {
+          setLocalidadesError("Não foi possível carregar os dados do município.");
+        }
+      })
+      .finally(() => {
+        if (detalheRequestRef.current === requestId) setLoadingDetalhe(false);
+      });
+  }
 
   const registeredItems = clientBases.filter((base) => selectedBases.has(base.id)).map((base) => {
     const baseModules = clientModules.filter((module) => module.baseId === base.id);
@@ -180,7 +250,13 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
   const items = tipo === "implantacao_sistema" ? [...(origem === "cadastrado" ? registeredItems : []), ...draftItems] : [];
 
   function resetSelections(nextMunicipioId: string) {
+    detalheRequestRef.current += 1;
     setMunicipioId(nextMunicipioId);
+    setCodigoIbge("");
+    setMunicipioNome("");
+    setPopulacao("");
+    setLoadingDetalhe(false);
+    setLocalidadesError(null);
     setSelectedBases(new Set());
     setSelectedModules(new Set());
     setDraftBases([]);
@@ -264,7 +340,92 @@ export function ProposalRequestForm({ clientes, bases, modulos, contractedModule
           <p className="text-xs text-app-muted-foreground"><CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-app-success" />Badges verdes indicam módulos já contratados; eles ainda podem ser selecionados.</p>
         </> : null}</div>}
       </div> : <div className="mt-4 space-y-4">
-        {initialData ? <Field label="Cliente"><div className="rounded-app-md border border-app-border bg-app-surface-elevated/40 px-3 py-2.5"><p className="text-sm font-semibold text-app-foreground">{initialData.clienteNomeSnapshot}</p><p className="text-xs text-app-muted-foreground">{initialData.municipioNome}/{initialData.uf}{initialData.codigoIbge ? ` · IBGE ${initialData.codigoIbge}` : ""} · cliente original da proposta</p></div></Field> : <><div className="grid gap-4 sm:grid-cols-3"><Field label="Nome do cliente"><input name="clienteNomeSnapshot" required className={inputCls} placeholder="Ex.: Prefeitura Municipal" /></Field><Field label="UF"><select name="uf" value={uf} onChange={(event) => { setUf(event.target.value); setCodigoIbge(""); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}>{ufs.map((item) => <option key={item.sigla} value={item.sigla}>{item.nome !== item.sigla ? `${item.sigla} - ${item.nome}` : item.sigla}</option>)}</select></Field><Field label="Município"><select required value={codigoIbge} onChange={(event) => { setCodigoIbge(event.target.value); setConfirmedExistingCity(false); setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false }))); }} className={selectCls}><option value="" disabled>Selecione...</option>{municipiosUf.map((city) => <option key={city.id} value={city.id}>{city.nome}</option>)}</select></Field></div><input type="hidden" name="codigoIbge" value={codigoIbge} /><input type="hidden" name="municipioNome" value={selectedCity?.nome ?? ""} /></>}
+        {initialData ? (
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Cliente" className="sm:col-span-2">
+              <div className="rounded-app-md border border-app-border bg-app-surface-elevated/40 px-3 py-2.5">
+                <p className="text-sm font-semibold text-app-foreground">{initialData.clienteNomeSnapshot}</p>
+                <p className="text-xs text-app-muted-foreground">
+                  {initialData.municipioNome}/{initialData.uf}
+                  {initialData.codigoIbge ? ` · IBGE ${initialData.codigoIbge}` : ""} · cliente original da proposta
+                </p>
+              </div>
+            </Field>
+            <Field label="População estimada">
+              <input
+                name="populacao"
+                type="number"
+                min={0}
+                inputMode="numeric"
+                value={populacao}
+                onChange={(event) => setPopulacao(event.target.value)}
+                className={inputCls}
+                placeholder="Informe manualmente"
+              />
+            </Field>
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-4">
+              <Field label="Nome do cliente" className="sm:col-span-4">
+                <input name="clienteNomeSnapshot" required className={inputCls} placeholder="Ex.: Prefeitura Municipal" />
+              </Field>
+              <Field label="UF">
+                <select
+                  name="uf"
+                  value={uf}
+                  onChange={(event) => {
+                    detalheRequestRef.current += 1;
+                    setUf(event.target.value);
+                    setCodigoIbge("");
+                    setMunicipioNome("");
+                    setPopulacao("");
+                    setLoadingDetalhe(false);
+                    setLocalidadesError(null);
+                    setConfirmedExistingCity(false);
+                    setDraftBases((current) => current.map((base) => ({ ...base, forcarCriacaoDuplicada: false })));
+                  }}
+                  className={selectCls}
+                >
+                  {ufs.map((item) => (
+                    <option key={item.sigla} value={item.sigla}>
+                      {item.nome !== item.sigla ? `${item.sigla} - ${item.nome}` : item.sigla}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Município" className="sm:col-span-2">
+                <select
+                  required
+                  value={codigoIbge}
+                  disabled={loadingMunicipios}
+                  onChange={(event) => loadMunicipioDetalhe(event.target.value)}
+                  className={selectCls}
+                >
+                  <option value="" disabled>{loadingMunicipios ? "Carregando..." : "Selecione..."}</option>
+                  {municipiosUf.map((city) => (
+                    <option key={city.id} value={city.id}>{city.nome}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="População estimada">
+                <input
+                  name="populacao"
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  value={populacao}
+                  onChange={(event) => setPopulacao(event.target.value)}
+                  className={inputCls}
+                  placeholder={loadingDetalhe ? "Carregando..." : "Informe manualmente"}
+                />
+              </Field>
+            </div>
+            {localidadesError ? <p className="text-xs font-medium text-app-warning">{localidadesError}</p> : null}
+            <input type="hidden" name="codigoIbge" value={codigoIbge} />
+            <input type="hidden" name="municipioNome" value={municipioNome || selectedCity?.nome || ""} />
+          </>
+        )}
         {existingCityClients.length > 0 ? <div className="flex gap-2 rounded-app-md border border-app-warning/40 bg-app-warning/10 p-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-app-warning" aria-hidden="true" />
           <div className="space-y-3 text-sm">
