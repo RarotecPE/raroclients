@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPropostaTransition, assertProposalDeletionAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, hideProposalIds, parseProposalOriginNote, propostaHistoricoAcaoLabel, proposalClientsByIbge, requireProposalCancellationReason, selectProposalClientCandidate } from "./proposal";
+import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, hideProposalIds, parseProposalOriginNote, propostaHistoricoAcaoLabel, proposalClientsByIbge, requireProposalCancellationReason, selectProposalClientCandidate } from "./proposal";
 
 test("aceita somente transições orientadas pelas ações da proposta", () => {
   assert.doesNotThrow(() => assertPropostaTransition("solicitada", "gerada"));
@@ -120,4 +120,40 @@ test("remove identificadores de proposta de descrições legadas", () => {
   assert.equal(hideProposalIds(`Base Saúde criada a partir da proposta aceita ${id}.`), "Base Saúde criada a partir da proposta aceita.");
   assert.equal(hideProposalIds(`2 versões do documento da proposta ${id} vinculadas ao cliente.`), "2 versões do documento da proposta vinculadas ao cliente.");
   assert.equal(hideProposalIds("Evento sem proposta vinculada."), "Evento sem proposta vinculada.");
+});
+
+test("permite edição de proposta conforme o perfil e status", () => {
+  // Autor pode editar enquanto solicitada
+  assert.doesNotThrow(() => assertProposalEditAllowed("solicitada", false, true));
+  // Autor não pode editar em outros status
+  assert.throws(() => assertProposalEditAllowed("gerada", false, true), /status atual/);
+  assert.throws(() => assertProposalEditAllowed("em_retificacao", false, true), /status atual/);
+  assert.throws(() => assertProposalEditAllowed("enviada", false, true), /status atual/);
+  assert.throws(() => assertProposalEditAllowed("aceita", false, true), /status atual/);
+
+  // Usuário que não é autor não pode editar
+  assert.throws(() => assertProposalEditAllowed("solicitada", false, false), /não autorizado/);
+
+  // Gestor pode editar em solicitada e em_retificacao
+  assert.doesNotThrow(() => assertProposalEditAllowed("solicitada", true, false));
+  assert.doesNotThrow(() => assertProposalEditAllowed("em_retificacao", true, false));
+  // Gestor não pode editar em gerada, enviada, aceita
+  assert.throws(() => assertProposalEditAllowed("gerada", true, false), /status atual/);
+  assert.throws(() => assertProposalEditAllowed("enviada", true, false), /status atual/);
+  assert.throws(() => assertProposalEditAllowed("aceita", true, false), /status atual/);
+});
+
+test("permite cancelamento de proposta conforme o perfil e status", () => {
+  // Autor pode cancelar em solicitada
+  assert.doesNotThrow(() => assertProposalCancelAllowed("solicitada", false, true));
+  // Gestor pode cancelar em solicitada
+  assert.doesNotThrow(() => assertProposalCancelAllowed("solicitada", true, false));
+
+  // Não autor não pode cancelar
+  assert.throws(() => assertProposalCancelAllowed("solicitada", false, false), /não autorizado/);
+
+  // Não pode cancelar em outros status
+  assert.throws(() => assertProposalCancelAllowed("gerada", false, true), /status solicitada/);
+  assert.throws(() => assertProposalCancelAllowed("gerada", true, false), /status solicitada/);
+  assert.throws(() => assertProposalCancelAllowed("enviada", true, false), /status solicitada/);
 });

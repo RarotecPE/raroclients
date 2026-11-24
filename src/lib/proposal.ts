@@ -37,6 +37,35 @@ export function assertProposalDeletionAllowed(status: string, excluidaAt?: Date 
   if (status !== "cancelada") throw new Error("Somente propostas canceladas podem ser excluídas.");
 }
 
+export function assertProposalEditAllowed(
+  situacao: string,
+  isGestor: boolean,
+  isAuthor: boolean,
+) {
+  if (!isGestor && !isAuthor) {
+    throw new Error("Acesso não autorizado para editar esta proposta.");
+  }
+  if (!isGestor && situacao !== "solicitada") {
+    throw new Error("A proposta não pode ser editada no status atual.");
+  }
+  if (isGestor && situacao !== "solicitada" && situacao !== "em_retificacao") {
+    throw new Error("A proposta não pode ser editada no status atual.");
+  }
+}
+
+export function assertProposalCancelAllowed(
+  situacao: string,
+  isGestor: boolean,
+  isAuthor: boolean,
+) {
+  if (!isGestor && !isAuthor) {
+    throw new Error("Acesso não autorizado para cancelar esta proposta.");
+  }
+  if (situacao !== "solicitada") {
+    throw new Error("Somente propostas no status solicitada podem ser canceladas.");
+  }
+}
+
 export function requireProposalCancellationReason(value: string | null | undefined) {
   const reason = value?.trim();
   if (!reason) throw new Error("Informe o motivo do cancelamento.");

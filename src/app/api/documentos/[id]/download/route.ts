@@ -20,8 +20,14 @@ export async function GET(
   const [documento] = await db.select().from(documentos).where(eq(documentos.id, id));
   if (!documento) return NextResponse.json({ error: "Documento nao encontrado." }, { status: 404 });
   if (documento.propostaId) {
-    const [proposal] = await db.select({ id: propostas.id }).from(propostas).where(and(eq(propostas.id, documento.propostaId), isNull(propostas.excluidaAt)));
+    const [proposal] = await db
+      .select({ id: propostas.id, solicitadoPorId: propostas.solicitadoPorId })
+      .from(propostas)
+      .where(and(eq(propostas.id, documento.propostaId), isNull(propostas.excluidaAt)));
     if (!proposal) return NextResponse.json({ error: "Documento nao encontrado." }, { status: 404 });
+    if (!session.permissions.manage && proposal.solicitadoPorId !== session.user.id) {
+      return NextResponse.json({ error: "Acesso nao autorizado." }, { status: 403 });
+    }
   }
   if (!documento.storageKey) return NextResponse.json({ error: "Documento sem arquivo armazenado." }, { status: 404 });
 

@@ -15,20 +15,45 @@ const proposalGrid = "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_
 export default async function PropostasPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; status?: string; tipo?: string }>;
+  searchParams: Promise<{ q?: string; status?: string; tipo?: string; solicitante?: string }>;
 }) {
   const [params, rows, session] = await Promise.all([
     searchParams,
     db.select().from(propostas).where(isNull(propostas.excluidaAt)).orderBy(desc(propostas.createdAt)),
     getCurrentSession(),
   ]);
+  const isGestor = session?.permissions.manage === true;
+  const currentUserId = session?.user?.id;
+
+  const visibleRows = isGestor
+    ? rows
+    : rows.filter((proposal) => proposal.solicitadoPorId && proposal.solicitadoPorId === currentUserId);
+
+  const solicitantes = isGestor
+    ? Array.from(
+        new Set(
+          rows
+            .map((p) => p.solicitadoPorNome || p.solicitadoPorEmail)
+            .filter((name): name is string => Boolean(name)),
+        ),
+      ).sort((a, b) => a.localeCompare(b, "pt-BR"))
+    : [];
+
   const query = (params.q ?? "").trim().toLocaleLowerCase("pt-BR");
-  const filtered = rows.filter((proposal) => {
+  const filtered = visibleRows.filter((proposal) => {
     if (params.status && proposal.situacao !== params.status) return false;
     if (params.tipo && proposal.tipo !== params.tipo) return false;
-    return !query || `${proposal.clienteNomeSnapshot} ${proposal.municipioNome} ${proposal.uf}`.toLocaleLowerCase("pt-BR").includes(query);
+    if (
+      params.solicitante &&
+      proposal.solicitadoPorNome !== params.solicitante &&
+      proposal.solicitadoPorEmail !== params.solicitante
+    ) {
+      return false;
+    }
+    const searchableText = `${proposal.clienteNomeSnapshot} ${proposal.municipioNome} ${proposal.uf} ${proposal.solicitadoPorNome ?? ""}`;
+    return !query || searchableText.toLocaleLowerCase("pt-BR").includes(query);
   });
-  const count = (status: string) => rows.filter((proposal) => proposal.situacao === status).length;
+  const count = (status: string) => visibleRows.filter((proposal) => proposal.situacao === status).length;
 
   return (
     <div className="flex flex-col gap-5">
@@ -42,7 +67,7 @@ export default async function PropostasPage({
           <Stat
             key={type.value}
             label={type.label}
-            value={rows.filter((proposal) => proposal.tipo === type.value).length}
+            value={visibleRows.filter((proposal) => proposal.tipo === type.value).length}
             tone={type.tone}
           />
         ))}
@@ -50,14 +75,24 @@ export default async function PropostasPage({
       <Panel>
         <PanelHeader
           title="Central de propostas"
-          description="Solicitações, documentos, envios e decisões comerciais"
-          right={session?.permissions.manage ? (
+          description={
+            isGestor
+              ? "Solicitações, documentos, envios e decisões comerciais de todos os solicitantes"
+              : "Minhas solicitações, documentos, envios e retornos comerciais"
+          }
+          right={
             <Link href="/propostas/nova" className={btnPrimary}>
               <Plus className="h-4 w-4" /> Solicitar proposta
             </Link>
-          ) : null}
+          }
         />
-        <form className="grid gap-3 border-b border-app-border p-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <form
+          className={`grid gap-3 border-b border-app-border p-4 sm:grid-cols-2 ${
+            isGestor
+              ? "lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+              : "lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+          }`}
+        >
           <div className="relative">
             <Search className="absolute left-3 top-3 h-4 w-4 text-app-muted-foreground" />
             <input name="q" defaultValue={params.q} placeholder="Cliente ou município" className={`${inputCls} pl-9`} />
@@ -74,6 +109,14 @@ export default async function PropostasPage({
               <option key={item.value} value={item.value}>{item.label}</option>
             ))}
           </select>
+          {isGestor && solicitantes.length > 0 ? (
+            <select name="solicitante" defaultValue={params.solicitante ?? ""} className={selectCls}>
+              <option value="">Todos os solicitantes</option>
+              {solicitantes.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          ) : null}
           <button className={btnPrimary}>Filtrar</button>
         </form>
         <div className="overflow-x-auto">
@@ -101,19 +144,34 @@ export default async function PropostasPage({
                       <p className="text-xs text-app-muted-foreground">{proposal.municipioNome}/{proposal.uf}</p>
                     </div>
                     <div className="px-4 py-3 text-sm text-app-muted-foreground">{optLabel(proposal.tipo)}</div>
-                    <div className="px-4 py-3 text-sm text-app-muted-foreground">{formatDate(proposal.data)}</div>
+                    <div className="px-4 py-3 text-sm text-app-muted-foreground">
+                      <p>{formatDate(proposal.data)}</p>
+                      {isGestor && proposal.solicitadoPorNome ? (
+                        <p className="text-xs text-app-muted-foreground truncate" title={proposal.solicitadoPorNome}>
+                          Por {proposal.solicitadoPorNome}
+                        </p>
+                      ) : null}
+                    </div>
                     <div className="px-4 py-3">
                       <Badge tone={optTone(proposal.situacao)}>{optLabel(proposal.situacao)}</Badge>
                     </div>
                     <div className="px-4 py-3 text-xs text-app-muted-foreground">
                       {proposal.situacao === "solicitada" ? (
-                        <><FileClock className="mr-1 inline h-3.5 w-3.5" />Anexar documento</>
+                        isGestor ? (
+                          <><FileClock className="mr-1 inline h-3.5 w-3.5" />Anexar documento</>
+                        ) : (
+                          "Aguardando documento do gestor"
+                        )
                       ) : proposal.situacao === "gerada" ? (
                         <><Mail className="mr-1 inline h-3.5 w-3.5" />Enviar ao cliente</>
                       ) : proposal.situacao === "em_retificacao" ? (
-                        "Anexar nova versão"
+                        isGestor ? (
+                          "Anexar nova versão"
+                        ) : (
+                          "Aguardando versão retificada"
+                        )
                       ) : proposal.situacao === "cancelada" ? (
-                        "Disponível para exclusão"
+                        isGestor ? "Disponível para exclusão" : "Cancelada"
                       ) : (
                         "Acompanhar decisão"
                       )}

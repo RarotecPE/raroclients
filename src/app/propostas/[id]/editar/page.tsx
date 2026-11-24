@@ -23,8 +23,14 @@ export default async function EditarPropostaPage({ params }: { params: Promise<{
     getCurrentSession(),
   ]);
   if (!proposal) notFound();
-  if (!session?.permissions.manage) redirect(`/propostas/${id}`);
-  if (proposal.situacao !== "solicitada" && proposal.situacao !== "em_retificacao") redirect(`/propostas/${id}`);
+  const isGestor = session?.permissions.manage === true;
+  const isAuthor = proposal.solicitadoPorId && proposal.solicitadoPorId === session?.user?.id;
+  if (!isGestor && (!isAuthor || proposal.situacao !== "solicitada")) {
+    redirect(`/propostas/${id}`);
+  }
+  if (isGestor && proposal.situacao !== "solicitada" && proposal.situacao !== "em_retificacao") {
+    redirect(`/propostas/${id}`);
+  }
 
   const proposalModuleRows = proposalBaseRows.length
     ? await db.select().from(propostaModulos).where(inArray(propostaModulos.propostaBaseId, proposalBaseRows.map((base) => base.id)))

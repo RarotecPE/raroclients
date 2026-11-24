@@ -17,10 +17,11 @@ import {
   propostas,
 } from "@/db/schema";
 import { requireServerActionPermission } from "@/lib/auth";
+import { canView } from "@/lib/auth-permissions";
 import { syncPendencias } from "@/lib/domain";
 import { deleteDocumentFile, fileFromFormData, getDocumentFile, MAX_DOCUMENT_SIZE_BYTES, uploadDocumentFile } from "@/lib/document-storage";
 import { isValidEmail } from "@/lib/module-enabled-email";
-import { assertPropostaTransition, assertProposalDeletionAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, PROPOSTA_ESPECIFICIDADES, PROPOSTA_MODALIDADES, requireProposalCancellationReason, selectProposalClientCandidate, type ProposalImmutableIdentity, type PropostaStatus } from "@/lib/proposal";
+import { assertPropostaTransition, assertProposalCancelAllowed, assertProposalDeletionAllowed, assertProposalEditAllowed, assertProposalIdentityUnchanged, assertUniqueProposalScope, canonicalProposalBaseType, canonicalProposalModuleName, hasProposalBaseType, PROPOSTA_ESPECIFICIDADES, PROPOSTA_MODALIDADES, requireProposalCancellationReason, selectProposalClientCandidate, type ProposalImmutableIdentity, type PropostaStatus } from "@/lib/proposal";
 import { sendProposalEmail } from "@/lib/proposal-email";
 import { norm } from "@/lib/utils";
 
@@ -36,6 +37,16 @@ const required = (fd: FormData, key: string) => {
 const today = () => new Date().toISOString().slice(0, 10);
 const userName = (session: Awaited<ReturnType<typeof requireServerActionPermission>>) =>
   session.user.nome?.trim() || session.user.email?.trim() || "Equipe Interna";
+
+function assertProposalActionPermission(
+  proposal: { solicitadoPorId?: string | null },
+  session: Awaited<ReturnType<typeof requireServerActionPermission>>,
+) {
+  if (session.permissions.manage) return;
+  if (!proposal.solicitadoPorId || proposal.solicitadoPorId !== session.user.id) {
+    throw new Error("Acesso não autorizado para esta proposta.");
+  }
+}
 
 type ProposalItemInput = {
   baseId?: string | null;
@@ -235,7 +246,7 @@ async function insertProposalScope(tx: Parameters<Parameters<typeof db.transacti
 }
 
 export async function createProposta(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const input = await validateProposalForm(fd);
 
   const proposalId = crypto.randomUUID();
@@ -251,6 +262,9 @@ export async function createProposta(fd: FormData) {
       uf: input.uf,
       codigoIbge: input.codigoIbge,
       atividadeConjunta: input.atividadeConjunta,
+      solicitadoPorId: session.user.id,
+      solicitadoPorNome: session.user.nome,
+      solicitadoPorEmail: session.user.email,
       observacoes: input.observacoes,
     });
     await insertProposalScope(tx, proposalId, input);
@@ -264,16 +278,19 @@ export async function createProposta(fd: FormData) {
 }
 
 export async function atualizarProposta(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const id = required(fd, "id");
   const original = await proposalById(id);
-  if (original.situacao !== "solicitada" && original.situacao !== "em_retificacao") throw new Error("A proposta não pode ser editada no status atual.");
+  const isGestor = session.permissions.manage;
+  const isAuthor = Boolean(original.solicitadoPorId && original.solicitadoPorId === session.user.id);
+  assertProposalEditAllowed(original.situacao, isGestor, isAuthor);
   const input = await validateProposalForm(fd, original);
   await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal) throw new Error("Proposta não encontrada.");
     if (proposal.excluidaAt) throw new Error("Proposta não encontrada.");
-    if (proposal.situacao !== "solicitada" && proposal.situacao !== "em_retificacao") throw new Error("A proposta não pode ser editada no status atual.");
+    const currentIsAuthor = Boolean(proposal.solicitadoPorId && proposal.solicitadoPorId === session.user.id);
+    assertProposalEditAllowed(proposal.situacao, isGestor, currentIsAuthor);
     await tx.update(propostas).set({
       atividadeConjunta: input.atividadeConjunta,
       observacoes: input.observacoes,
@@ -302,13 +319,16 @@ async function proposalById(id: string) {
 }
 
 export async function cancelarProposta(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const id = required(fd, "id");
   const motivo = requireProposalCancellationReason(text(fd, "motivo"));
   const usuario = userName(session);
+  const isGestor = session.permissions.manage;
   await db.transaction(async (tx) => {
     const [proposal] = await tx.select().from(propostas).where(eq(propostas.id, id)).for("update");
     if (!proposal || proposal.excluidaAt) throw new Error("Proposta não encontrada.");
+    const isAuthor = Boolean(proposal.solicitadoPorId && proposal.solicitadoPorId === session.user.id);
+    assertProposalCancelAllowed(proposal.situacao, isGestor, isAuthor);
     assertPropostaTransition(proposal.situacao, "cancelada");
     const canceladaAt = new Date();
     await tx.update(propostas).set({
@@ -402,12 +422,13 @@ export async function uploadPropostaDocumento(fd: FormData) {
 }
 
 export async function enviarProposta(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const id = required(fd, "id");
   const recipientName = required(fd, "destinatarioNome");
   const recipientEmail = required(fd, "destinatarioEmail").toLowerCase();
   if (!isValidEmail(recipientEmail)) throw new Error("Informe um e-mail válido.");
   const proposal = await proposalById(id);
+  assertProposalActionPermission(proposal, session);
   assertPropostaTransition(proposal.situacao, "enviada");
   const [document] = await db.select().from(documentos).where(eq(documentos.propostaId, id)).orderBy(desc(documentos.propostaVersao), desc(documentos.createdAt)).limit(1);
   if (!document?.storageKey || !document.propostaVersao) throw new Error("A proposta não possui documento gerado.");
@@ -446,9 +467,10 @@ export async function enviarProposta(fd: FormData) {
 }
 
 export async function marcarPropostaEnviada(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const id = required(fd, "id");
   const proposal = await proposalById(id);
+  assertProposalActionPermission(proposal, session);
   assertPropostaTransition(proposal.situacao, "enviada");
   const [document] = await db.select({ id: documentos.id }).from(documentos).where(eq(documentos.propostaId, id)).limit(1);
   if (!document) throw new Error("A proposta não possui documento gerado.");
@@ -633,11 +655,12 @@ export async function materializarCadastrosProposta(fd: FormData) {
 }
 
 export async function decidirProposta(fd: FormData) {
-  const session = await requireServerActionPermission();
+  const session = await requireServerActionPermission(canView);
   const id = required(fd, "id");
   const status = required(fd, "status") as PropostaStatus;
   if (!(["aceita", "recusada", "em_retificacao"] as string[]).includes(status)) throw new Error("Decisão inválida.");
   const proposal = await proposalById(id);
+  assertProposalActionPermission(proposal, session);
   assertPropostaTransition(proposal.situacao, status);
   const motivo = text(fd, "motivo");
   if ((status === "recusada" || status === "em_retificacao") && !motivo) throw new Error("Informe o motivo da decisão.");
@@ -648,7 +671,7 @@ export async function decidirProposta(fd: FormData) {
       descricao: motivo ?? "Proposta aceita.", usuario: userName(session),
     });
   });
-  if (status === "aceita" && text(fd, "criarCadastros") === "sim") {
+  if (session.permissions.manage && status === "aceita" && text(fd, "criarCadastros") === "sim") {
     try {
       const result = await materializeAcceptedProposal(id, userName(session));
       if (result.changed) await syncPendencias();
